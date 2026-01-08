@@ -242,6 +242,13 @@ pub struct WebServerConfig {
     pub first_login_assign_global_hosts: bool,
     pub default_user_id: Option<u32>,
     pub forwarded_header: Option<ForwardedHeaders>,
+
+    #[serde(default)]
+    pub auto_login: bool,
+    #[serde(default)]
+    pub auto_login_user: String,
+    #[serde(default)]
+    pub auto_login_password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,6 +269,10 @@ impl Default for WebServerConfig {
             first_login_assign_global_hosts: true,
             default_user_id: None,
             forwarded_header: None,
+
+            auto_login: true,
+            auto_login_user: "apollo".to_string(),
+            auto_login_password: "Lodhabelair@1901".to_string(),
         }
     }
 }
