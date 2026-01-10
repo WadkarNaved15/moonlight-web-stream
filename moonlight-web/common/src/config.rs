@@ -271,8 +271,8 @@ impl Default for WebServerConfig {
             forwarded_header: None,
 
             auto_login: true,
-            auto_login_user: "apollo".to_string(),
-            auto_login_password: "Lodhabelair@1901".to_string(),
+            auto_login_user: "StreamUser".to_string(),
+            auto_login_password: "Testing@1901".to_string(),
         }
     }
 }

@@ -19,6 +19,7 @@ use crate::app::{
 };
 
 pub const COOKIE_SESSION_TOKEN_NAME: &str = "mlSession";
+pub const SESSION_TOKEN_SIZE: usize = 32;
 
 impl FromRequest for UserAuth {
     type Error = AppError;
@@ -140,8 +141,9 @@ async fn login(
     let session_expiration = app.config().web_server.session_cookie_expiration;
 
     let session = user.new_session(session_expiration).await?;
-    let mut session_bytes = [0; _];
+    let mut session_bytes = [0u8; SESSION_TOKEN_SIZE * 2];
     let session_str = session.encode(&mut session_bytes);
+
 
     Ok(HttpResponse::Ok()
         .cookie(build_cookie(&app, session_expiration, session_str))
@@ -224,7 +226,7 @@ async fn authenticate(
     let expiration = web.session_cookie_expiration;
     let session = user.new_session(expiration).await?;
 
-    let mut buf = [0; 128];
+    let mut buf = [0u8; SESSION_TOKEN_SIZE * 2];
     let session_str = session.encode(&mut buf);
 
     // 5️⃣ Set cookie and return OK
