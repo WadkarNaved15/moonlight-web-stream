@@ -314,26 +314,44 @@ class MainApp implements Component {
         this.currentDisplay = display
     }
 
-    async forceFetch() {
-        const promiseUser = this.refreshUserRole()
+  async forceFetch() {
+    const promiseUser = this.refreshUserRole()
 
-        await Promise.all([
-            this.hostList.forceFetch(),
-            this.gameList?.forceFetch()
-        ])
+    await Promise.all([
+        this.hostList.forceFetch(),
+        this.gameList?.forceFetch()
+    ])
 
-        if (this.currentDisplay == "games"
-            && this.gameList
-            && !this.hostList.getHost(this.gameList.getHostId())) {
-            // The newly fetched list doesn't contain the hosts game view we're in -> go to hosts
-            this.setCurrentDisplay("hosts")
+    // 🔥 AUTO-SKIP HOST SELECTION (single host)
+    if (this.currentDisplay === "hosts") {
+        const hosts = this.hostList.getHosts()
+
+        if (hosts.length === 1) {
+            const host = hosts[0]
+
+            this.setCurrentDisplay(
+                "games",
+                { hostId: host.getHostId() },
+                true
+            )
+            return
         }
-
-        await Promise.all([
-            promiseUser,
-            this.refreshGameListActiveGame()
-        ])
     }
+
+    if (
+        this.currentDisplay === "games" &&
+        this.gameList &&
+        !this.hostList.getHost(this.gameList.getHostId())
+    ) {
+        this.setCurrentDisplay("hosts")
+    }
+
+    await Promise.all([
+        promiseUser,
+        this.refreshGameListActiveGame()
+    ])
+}
+
     private async refreshUserRole() {
         this.user = await apiGetUser(this.api)
 

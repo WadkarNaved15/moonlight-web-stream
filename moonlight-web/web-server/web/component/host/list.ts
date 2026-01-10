@@ -67,6 +67,11 @@ export class HostList extends FetchListComponent<DetailedHost | UndetailedHost, 
         return this.list.get().find(host => host.getHostId() == hostId)
     }
 
+    getHosts(): readonly Host[] {
+    return this.list.get()
+}
+
+
     private onHostOpenEvent(event: ComponentEvent<Host>) {
         this.eventTarget.dispatchEvent(new ComponentEvent("ml-hostopen", event.component))
     }
