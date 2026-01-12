@@ -143,7 +143,7 @@ export class Game implements Component {
             // If we don't do this we might get a url bar at the top
             window.location.href = buildUrl(`/stream.html?${query}`)
         } else {
-            window.open(buildUrl(`/stream.html?${query}`), "_blank")
+            window.open(buildUrl(`/stream.html?${query}`))
         }
     }
 
