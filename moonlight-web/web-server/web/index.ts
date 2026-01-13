@@ -1,5 +1,5 @@
 import "./polyfill/index.js"
-import { Api, getApi, apiPostHost, FetchError, apiLogout, apiGetUser, tryLogin, apiGetHost } from "./api.js";
+import { Api, getApi, apiPostHost, FetchError, apiLogout, apiGetUser, tryLogin, apiGetHost, apiGetApps } from "./api.js";
 import { AddHostModal } from "./component/host/add_modal.js";
 import { HostList } from "./component/host/list.js";
 import { Component, ComponentEvent } from "./component/index.js";
@@ -314,7 +314,7 @@ class MainApp implements Component {
         this.currentDisplay = display
     }
 
-  async forceFetch() {
+async forceFetch() {
     const promiseUser = this.refreshUserRole()
 
     await Promise.all([
@@ -322,18 +322,30 @@ class MainApp implements Component {
         this.gameList?.forceFetch()
     ])
 
-    // 🔥 AUTO-SKIP HOST SELECTION (single host)
+    // 🔥 AUTO-SKIP HOST + AUTO-START DESKTOP
     if (this.currentDisplay === "hosts") {
         const hosts = this.hostList.getHosts()
-
         if (hosts.length === 1) {
             const host = hosts[0]
-
-            this.setCurrentDisplay(
-                "games",
-                { hostId: host.getHostId() },
-                true
+            const hostId = host.getHostId()
+            
+            // Fetch apps
+            const apps = await apiGetApps(this.api, { host_id: hostId })
+            
+            // Find Desktop (app_id 1 or title contains "desktop")
+            const desktopApp = apps.find(app => 
+                app.app_id === 1 || 
+                app.title.toLowerCase().includes('desktop')
             )
+            
+            if (desktopApp) {
+                // Auto-launch stream
+                this.startStreamForApp(hostId, desktopApp.app_id)
+                return
+            }
+            
+            // Fallback: show games list
+            this.setCurrentDisplay("games", { hostId, hostCache: apps }, true)
             return
         }
     }
@@ -351,6 +363,20 @@ class MainApp implements Component {
         this.refreshGameListActiveGame()
     ])
 }
+
+private startStreamForApp(hostId: number, appId: number) {
+    let query = new URLSearchParams({
+        hostId: hostId.toString(),
+        appId: appId.toString(),
+    })
+    
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+        window.location.href = buildUrl(`/stream.html?${query}`)
+    } else {
+        window.open(buildUrl(`/stream.html?${query}`))
+    }
+}
+
 
     private async refreshUserRole() {
         this.user = await apiGetUser(this.api)
