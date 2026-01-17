@@ -583,91 +583,40 @@ private async onInfo(event: InfoEvent) {
 }
 
 class ConnectionInfoModal implements Modal<void> {
-
     private eventTarget = new EventTarget()
-
     private root = document.createElement("div")
-
-    private textTy: LogMessageType | null = null
     private text = document.createElement("p")
-
-    private debugDetailButton = document.createElement("button")
-    private debugDetail = "" // We store this seperate because line breaks don't work when the element is not mounted on the dom
-    private debugDetailDisplay = document.createElement("div")
 
     constructor() {
         this.root.classList.add("modal-video-connect")
-
-        this.text.innerText = "Connecting"
+        this.text.innerText = "Starting game…"
         this.root.appendChild(this.text)
-
-        this.debugDetailButton.innerText = "Show Logs"
-        this.debugDetailButton.addEventListener("click", this.onDebugDetailClick.bind(this))
-        this.root.appendChild(this.debugDetailButton)
-
-        this.debugDetailDisplay.classList.add("textlike")
-        this.debugDetailDisplay.classList.add("modal-video-connect-debug")
-    }
-
-    private onDebugDetailClick() {
-        let debugDetailCurrentlyShown = this.root.contains(this.debugDetailDisplay)
-
-        if (debugDetailCurrentlyShown) {
-            this.debugDetailButton.innerText = "Show Logs"
-            this.root.removeChild(this.debugDetailDisplay)
-        } else {
-            this.debugDetailButton.innerText = "Hide Logs"
-            this.root.appendChild(this.debugDetailDisplay)
-            this.debugDetailDisplay.innerText = this.debugDetail
-        }
-    }
-
-    private debugLog(line: string) {
-        this.debugDetail += `${line}\n`
-        this.debugDetailDisplay.innerText = this.debugDetail
-        console.info(`[Stream]: ${line}`)
     }
 
     onInfo(event: InfoEvent) {
         const data = event.detail
 
-        if (data.type == "connectionComplete") {
-            const text = `Connection Complete`
-            this.text.innerText = text
-            this.debugLog(text)
-
+        // ✅ Connection established
+        if (data.type === "connectionComplete") {
+            this.text.innerText = "Starting game…"
             this.eventTarget.dispatchEvent(new Event("ml-connected"))
-        } else if (data.type == "addDebugLine") {
-            const message = data.line.trim()
-            if (message) {
-                this.debugLog(message)
+            return
+        }
 
-                if (!this.textTy) {
-                    this.text.innerText = message
-                    this.textTy = data.additional?.type ?? null
-                } else if (data.additional?.type == "fatalDescription") {
-                    this.text.innerText = message
-                    this.textTy = data.additional.type
-                }
-            }
+        if (data.type === "addDebugLine") {
+            // Keep logs for developers only
+            console.info(`[Stream] ${data.line}`)
 
-            if (data.additional?.type == "fatal" || data.additional?.type == "fatalDescription") {
-                showModal(this)
-            } else if (data.additional?.type == "recover") {
-                showModal(null)
-            } else if (data.additional?.type == "informError") {
-                showErrorPopup(data.line)
-            }
-        } else if (data.type == "serverMessage") {
-            const text = `Server: ${data.message}`
-            this.text.innerText = text
-            this.debugLog(text)
+            return
         }
     }
 
     onFinish(abort: AbortSignal): Promise<void> {
-        return new Promise((resolve, reject) => {
-            this.eventTarget.addEventListener("ml-connected", () => resolve(), { once: true, signal: abort })
+        return new Promise(resolve => {
+            this.eventTarget.addEventListener("ml-connected", () => resolve(), {
+                once: true,
+                signal: abort
+            })
         })
     }
 
@@ -678,6 +627,7 @@ class ConnectionInfoModal implements Modal<void> {
         parent.removeChild(this.root)
     }
 }
+
 
 class ViewerSidebar implements Component, Sidebar {
     private app: ViewerApp
