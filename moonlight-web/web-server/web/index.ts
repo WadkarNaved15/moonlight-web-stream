@@ -370,11 +370,8 @@ private startStreamForApp(hostId: number, appId: number) {
         appId: appId.toString(),
     })
     
-    if (window.matchMedia('(display-mode: standalone)').matches) {
-        window.location.href = buildUrl(`/stream.html?${query}`)
-    } else {
-        window.open(buildUrl(`/stream.html?${query}`))
-    }
+    window.location.replace(buildUrl(`/stream.html?${query}`))
+
 }
 
 

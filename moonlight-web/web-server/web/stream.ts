@@ -63,6 +63,31 @@ window.requestAnimationFrame(() => {
 
 startApp()
 
+function getHomeOrigin(): string {
+    const meta = document.querySelector<HTMLMetaElement>(
+        'meta[name="home-origin"]'
+    )
+
+    if (meta?.content) {
+        return meta.content.replace(/\/$/, "")
+    }
+
+    if ((window as any).__HOME_ORIGIN__) {
+        return (window as any).__HOME_ORIGIN__.replace(/\/$/, "")
+    }
+
+    // LAST fallback: referrer origin (if same-site)
+    try {
+        if (document.referrer) {
+            return new URL(document.referrer).origin
+        }
+    } catch {}
+
+    // Absolute fallback (never breaks)
+    return window.location.origin
+}
+
+
 class ViewerApp implements Component {
     private api: Api
 
@@ -80,8 +105,22 @@ class ViewerApp implements Component {
     private toggleFullscreenWithKeybind: boolean
     private hasShownFullscreenEscapeWarning = false
 
+    private beforeUnloadHandler = (e: BeforeUnloadEvent) => {
+    e.preventDefault()
+    e.returnValue = ""
+}
+
     constructor(api: Api, hostId: number, appId: number) {
         this.api = api
+
+        history.replaceState(null, "", location.href)
+        history.pushState(null, "", location.href)
+
+        window.addEventListener("popstate", () => {
+            history.pushState(null, "", location.href)
+        })
+
+        window.addEventListener("beforeunload", this.beforeUnloadHandler)
 
         // Configure sidebar
         this.sidebar = new ViewerSidebar(this)
@@ -142,6 +181,18 @@ class ViewerApp implements Component {
             }
         }
     }
+
+private navigateHome() {
+    // 🔓 allow navigation without browser prompt
+    window.removeEventListener("beforeunload", this.beforeUnloadHandler)
+
+    const home = getHomeOrigin()
+
+    // Hard reset navigation
+    window.location.replace(home)
+}
+
+    
     private addListeners(element: GlobalEventHandlers) {
         element.addEventListener("keydown", this.onKeyDown.bind(this), { passive: false })
         element.addEventListener("keyup", this.onKeyUp.bind(this), { passive: false })
@@ -157,6 +208,8 @@ class ViewerApp implements Component {
         element.addEventListener("touchcancel", this.onTouchCancel.bind(this), { passive: false })
         element.addEventListener("touchmove", this.onTouchMove.bind(this), { passive: false })
     }
+
+    
 
     private async startStream(hostId: number, appId: number, settings: Settings, browserSize: [number, number]) {
         setSidebarStyle({
@@ -182,17 +235,32 @@ class ViewerApp implements Component {
         this.stream.mount(this.div)
     }
 
-    private async onInfo(event: InfoEvent) {
-        const data = event.detail
+private async onInfo(event: InfoEvent) {
+    const data = event.detail
 
-        if (data.type == "app") {
-            const app = data.app
-
-            document.title = `Stream: ${app.title}`
-        } else if (data.type == "connectionComplete") {
-            this.sidebar.onCapabilitiesChange(data.capabilities)
-        }
+    if (data.type === "app") {
+        document.title = `Stream: ${data.app.title}`
+        return
     }
+
+    if (data.type === "connectionComplete") {
+        this.sidebar.onCapabilitiesChange(data.capabilities)
+        return
+    }
+
+    // 🔴 TERMINAL CONDITION — GO HOME
+    if (
+        data.type === "addDebugLine" &&
+        data.additional?.type === "fatalDescription"
+    ) {
+        // Optional: small delay to let logs flush / modal update
+        setTimeout(() => {
+            this.navigateHome()
+        }, 300)
+        return
+    }
+}
+
 
     private focusInput() {
         if (this.stream?.getInput().getCurrentPredictedTouchAction() != "screenKeyboard" && !this.sidebar.getScreenKeyboard().isVisible()) {
