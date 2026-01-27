@@ -13,6 +13,26 @@ import { ScreenKeyboard, TextEvent } from "./screen_keyboard.js";
 import { FormModal } from "./component/modal/form.js";
 import { streamStatsToText } from "./stream/stats.js";
 
+// Lock UI immediately
+document.body.classList.add("loading")
+
+let splashHidden = false
+
+function hideSplash() {
+    if (splashHidden) return
+    splashHidden = true
+
+    const splash = document.getElementById("splash-screen")
+    if (!splash) return
+
+    splash.classList.add("hidden")
+    document.body.classList.remove("loading")
+
+    setTimeout(() => splash.remove(), 500)
+}
+
+
+
 async function startApp() {
     const api = await getApi()
 
@@ -113,6 +133,42 @@ class ViewerApp implements Component {
     constructor(api: Api, hostId: number, appId: number) {
         this.api = api
 
+let immersiveRequested = false
+
+const requestImmersiveOnce = async (e: Event) => {
+    if (immersiveRequested) return
+    immersiveRequested = true
+
+    // Prevent other handlers from killing the gesture
+    e.stopImmediatePropagation()
+
+    try {
+        // 1️⃣ Fullscreen
+        if (!this.isFullscreen()) {
+    await this.requestFullscreen()
+}
+
+
+        // 2️⃣ Pointer Lock (must be SAME gesture)
+        const input = document.getElementById("input") as HTMLDivElement
+if (input) {
+    input.focus({ preventScroll: true })
+    input.requestPointerLock()
+}
+
+
+    } catch (err) {
+        console.warn("Immersive mode failed:", err)
+    }
+
+    window.removeEventListener("pointerdown", requestImmersiveOnce, true)
+    window.removeEventListener("keydown", requestImmersiveOnce, true)
+}
+
+// Capture phase is CRITICAL
+window.addEventListener("pointerdown", requestImmersiveOnce, true)
+window.addEventListener("keydown", requestImmersiveOnce, true)
+
         history.replaceState(null, "", location.href)
         history.pushState(null, "", location.href)
 
@@ -153,6 +209,7 @@ class ViewerApp implements Component {
         this.previousMouseMode = this.inputConfig.mouseMode
         this.toggleFullscreenWithKeybind = settings.toggleFullscreenWithKeybind
         this.startStream(hostId, appId, settings, [browserWidth, browserHeight])
+
 
         this.settings = settings
 
@@ -244,9 +301,15 @@ private async onInfo(event: InfoEvent) {
     }
 
     if (data.type === "connectionComplete") {
-        this.sidebar.onCapabilitiesChange(data.capabilities)
-        return
-    }
+    this.sidebar.onCapabilitiesChange(data.capabilities)
+
+    requestAnimationFrame(() => {
+        hideSplash()
+    })
+
+    return
+}
+
 
     // 🔴 TERMINAL CONDITION — GO HOME
     if (

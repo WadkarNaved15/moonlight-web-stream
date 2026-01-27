@@ -14,6 +14,11 @@ import { setTouchContextMenuEnabled } from "./polyfill/ios_right_click.js";
 import { buildUrl } from "./config_.js";
 import { setStyle as setPageStyle } from "./styles/index.js";
 
+// Lock UI immediately
+document.body.classList.add("loading")
+
+
+
 async function startApp() {
     setTouchContextMenuEnabled(true)
 
