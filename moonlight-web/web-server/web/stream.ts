@@ -149,13 +149,6 @@ const requestImmersiveOnce = async (e: Event) => {
 }
 
 
-        // 2️⃣ Pointer Lock (must be SAME gesture)
-        const input = document.getElementById("input") as HTMLDivElement
-if (input) {
-    input.focus({ preventScroll: true })
-    input.requestPointerLock()
-}
-
 
     } catch (err) {
         console.warn("Immersive mode failed:", err)
