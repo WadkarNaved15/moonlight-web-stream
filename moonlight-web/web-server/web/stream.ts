@@ -130,6 +130,7 @@ class ViewerApp implements Component {
     e.returnValue = ""
 }
 
+
     constructor(api: Api, hostId: number, appId: number) {
         this.api = api
 
@@ -139,16 +140,16 @@ const requestImmersiveOnce = async (e: Event) => {
     if (immersiveRequested) return
     immersiveRequested = true
 
-    // Prevent other handlers from killing the gesture
     e.stopImmediatePropagation()
 
     try {
         // 1️⃣ Fullscreen
         if (!this.isFullscreen()) {
-    await this.requestFullscreen()
-}
+            await this.requestFullscreen()
+        }
 
-
+        // 2️⃣ Pointer Lock
+        await this.requestPointerLock()
 
     } catch (err) {
         console.warn("Immersive mode failed:", err)
@@ -232,6 +233,28 @@ window.addEventListener("keydown", requestImmersiveOnce, true)
         }
     }
 
+private async isWebServerAlive(): Promise<boolean> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 1000)
+
+    try {
+        const res = await fetch("/index.html", {
+            method: "HEAD",
+            cache: "no-store",
+            signal: controller.signal
+        })
+        return res.ok
+    } catch {
+        return false
+    } finally {
+        clearTimeout(timeout)
+    }
+}
+
+
+
+
+
 private navigateHome() {
     // 🔓 allow navigation without browser prompt
     window.removeEventListener("beforeunload", this.beforeUnloadHandler)
@@ -294,28 +317,32 @@ private async onInfo(event: InfoEvent) {
     }
 
     if (data.type === "connectionComplete") {
-    this.sidebar.onCapabilitiesChange(data.capabilities)
+        this.sidebar.onCapabilitiesChange(data.capabilities)
+        requestAnimationFrame(() => hideSplash())
+        return
+    }
 
-    requestAnimationFrame(() => {
-        hideSplash()
-    })
-
-    return
-}
-
-
-    // 🔴 TERMINAL CONDITION — GO HOME
+    // 🔴 Supervisor explicitly killed the session → leave immediately
     if (
         data.type === "addDebugLine" &&
         data.additional?.type === "fatalDescription"
     ) {
-        // Optional: small delay to let logs flush / modal update
-        setTimeout(() => {
+        setTimeout(() => this.navigateHome(), 300)
+        return
+    }
+
+    // ⚠️ Any other debug noise → just check server health ONCE
+    if (data.type === "addDebugLine") {
+        const alive = await this.isWebServerAlive()
+        if (!alive) {
             this.navigateHome()
-        }, 300)
+        }
+        // if alive → do nothing
         return
     }
 }
+
+
 
 
     private focusInput() {
@@ -510,10 +537,6 @@ private async onInfo(event: InfoEvent) {
                     await showMessage("To exit Fullscreen you'll have to hold ESC for a few seconds.")
                 }
                 this.hasShownFullscreenEscapeWarning = true
-            }
-
-            if (this.getStream()?.getInput().getConfig().mouseMode == "relative") {
-                await this.requestPointerLock()
             }
 
             try {
