@@ -39,3 +39,12 @@ async fn config_js(app: Data<App>) -> HttpResponse {
         .append_header(("Content-Type", "text/javascript"))
         .body(config_js)
 }
+
+#[get("/health")]
+async fn health() -> HttpResponse {
+    HttpResponse::Ok().finish()
+}
+
+pub fn health_service() -> impl HttpServiceFactory {
+    services![health]
+}

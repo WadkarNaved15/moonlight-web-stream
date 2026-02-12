@@ -16,7 +16,7 @@ use crate::{
     app::App,
     cli::{Cli, Command},
     human_json::preprocess_human_json,
-    web::{web_config_js_service, web_service},
+    web::{web_config_js_service, web_service,health_service},
 };
 
 mod api;
@@ -137,6 +137,7 @@ async fn start(config: Config) -> Result<(), anyhow::Error> {
                     )
                     .service(api_service())
                     .service(web_config_js_service())
+                    .service(health_service())
                     .service(web_service()),
             )
         }

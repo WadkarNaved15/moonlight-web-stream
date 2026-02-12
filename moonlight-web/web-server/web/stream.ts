@@ -31,8 +31,6 @@ function hideSplash() {
     setTimeout(() => splash.remove(), 500)
 }
 
-
-
 async function startApp() {
     const api = await getApi()
 
@@ -126,42 +124,16 @@ class ViewerApp implements Component {
     private hasShownFullscreenEscapeWarning = false
 
     private beforeUnloadHandler = (e: BeforeUnloadEvent) => {
-    e.preventDefault()
-    e.returnValue = ""
-}
+        e.preventDefault()
+        e.returnValue = ""
+    }
 
+    public allowPageReload() {
+        window.removeEventListener("beforeunload", this.beforeUnloadHandler)
+    }
 
     constructor(api: Api, hostId: number, appId: number) {
         this.api = api
-
-let immersiveRequested = false
-
-const requestImmersiveOnce = async (e: Event) => {
-    if (immersiveRequested) return
-    immersiveRequested = true
-
-    e.stopImmediatePropagation()
-
-    try {
-        // 1️⃣ Fullscreen
-        if (!this.isFullscreen()) {
-            await this.requestFullscreen()
-        }
-
-        // 2️⃣ Pointer Lock
-        await this.requestPointerLock()
-
-    } catch (err) {
-        console.warn("Immersive mode failed:", err)
-    }
-
-    window.removeEventListener("pointerdown", requestImmersiveOnce, true)
-    window.removeEventListener("keydown", requestImmersiveOnce, true)
-}
-
-// Capture phase is CRITICAL
-window.addEventListener("pointerdown", requestImmersiveOnce, true)
-window.addEventListener("keydown", requestImmersiveOnce, true)
 
         history.replaceState(null, "", location.href)
         history.pushState(null, "", location.href)
@@ -204,7 +176,6 @@ window.addEventListener("keydown", requestImmersiveOnce, true)
         this.toggleFullscreenWithKeybind = settings.toggleFullscreenWithKeybind
         this.startStream(hostId, appId, settings, [browserWidth, browserHeight])
 
-
         this.settings = settings
 
         // Configure input
@@ -233,37 +204,84 @@ window.addEventListener("keydown", requestImmersiveOnce, true)
         }
     }
 
-private async isWebServerAlive(): Promise<boolean> {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 1000)
+    private async isWebServerAlive(): Promise<boolean> {
+    for (let i = 0; i < 2; i++) {
+        try {
+            const res = await fetch("/health", {
+                method: "GET",
+                cache: "no-store"
+            })
+            if (res.ok) return true
+        } catch {}
 
-    try {
-        const res = await fetch("/index.html", {
-            method: "HEAD",
-            cache: "no-store",
-            signal: controller.signal
-        })
-        return res.ok
-    } catch {
-        return false
-    } finally {
-        clearTimeout(timeout)
+        await new Promise(r => setTimeout(r, 800))
+    }
+
+    return false
+}
+
+    private checkingServer = false
+
+private async handleConnectionLost() {
+    if (this.checkingServer) return
+    this.checkingServer = true
+
+    this.stopHealthWatchdog() 
+    console.warn("🔌 Stream connection lost. Checking server...")
+
+    const alive = await this.isWebServerAlive()
+
+    if (!alive) {
+        console.warn("❌ Web server not reachable.")
+        this.navigateHome()
+    } else {
+        console.warn("✅ Server alive. Allow manual reconnect.")
+    }
+
+    this.checkingServer = false
+}
+
+private healthIntervalId: number | null = null
+
+private startHealthWatchdog() {
+    if (this.healthIntervalId != null) return
+
+    this.healthIntervalId = window.setInterval(async () => {
+        if (!this.stream) return
+
+        try {
+            const alive = await this.isWebServerAlive()
+
+            if (!alive) {
+                console.warn("🚨 Web server unreachable. Navigating home.")
+                this.navigateHome()
+            }
+        } catch {
+            console.warn("🚨 Health check failed. Navigating home.")
+            this.navigateHome()
+        }
+
+    }, 5000) // every 5 seconds (safe)
+}
+
+private stopHealthWatchdog() {
+    if (this.healthIntervalId != null) {
+        clearInterval(this.healthIntervalId)
+        this.healthIntervalId = null
     }
 }
 
 
 
+    private navigateHome() {
+        // 🔓 allow navigation without browser prompt
+        window.removeEventListener("beforeunload", this.beforeUnloadHandler)
 
+        const home = getHomeOrigin()
 
-private navigateHome() {
-    // 🔓 allow navigation without browser prompt
-    window.removeEventListener("beforeunload", this.beforeUnloadHandler)
-
-    const home = getHomeOrigin()
-
-    // Hard reset navigation
-    window.location.replace(home)
-}
+        // Hard reset navigation
+        window.location.replace(home)
+    }
 
     
     private addListeners(element: GlobalEventHandlers) {
@@ -282,8 +300,6 @@ private navigateHome() {
         element.addEventListener("touchmove", this.onTouchMove.bind(this), { passive: false })
     }
 
-    
-
     private async startStream(hostId: number, appId: number, settings: Settings, browserSize: [number, number]) {
         setSidebarStyle({
             edge: settings.sidebarEdge,
@@ -293,6 +309,50 @@ private navigateHome() {
 
         // Add app info listener
         this.stream.addInfoListener(this.onInfo.bind(this))
+
+        // ✅ Setup immersive mode - NOW this.stream exists
+        let immersiveAttempted = false
+        let streamReady = false
+
+        const attemptImmersive = async () => {
+            if (immersiveAttempted || !streamReady) return
+            immersiveAttempted = true
+            
+            // ✅ Wait longer to ensure WebRTC is fully stable
+            await new Promise(resolve => setTimeout(resolve, 1000))
+
+            try {
+                if (!this.isFullscreen()) {
+                    await this.requestFullscreen()
+                    // ✅ Wait for fullscreen to settle
+                    await new Promise(resolve => setTimeout(resolve, 500))
+                }
+                await this.requestPointerLock()
+            } catch (err) {
+                console.error("❌ Immersive mode failed:", err)
+                immersiveAttempted = false  // Allow retry on next interaction
+            }
+        }
+
+        // ✅ Setup immersive trigger - this.stream exists here
+        this.stream.addInfoListener((event) => {
+            if (event.detail.type === "connectionComplete") {
+                streamReady = true
+                this.startHealthWatchdog()
+                // ✅ Wait for next user interaction
+                const onFirstInteraction = () => {
+                    attemptImmersive()
+                    
+                    // Remove listeners after first interaction
+                    window.removeEventListener("pointerdown", onFirstInteraction)
+                    window.removeEventListener("keydown", onFirstInteraction)
+                }
+                
+                // ✅ Normal listeners (no capture phase, no blocking)
+                window.addEventListener("pointerdown", onFirstInteraction)
+                window.addEventListener("keydown", onFirstInteraction)
+            }
+        })
 
         // Create connection info modal
         const connectionInfo = new ConnectionInfoModal()
@@ -308,42 +368,37 @@ private navigateHome() {
         this.stream.mount(this.div)
     }
 
-private async onInfo(event: InfoEvent) {
-    const data = event.detail
+    private async onInfo(event: InfoEvent) {
+        const data = event.detail
 
-    if (data.type === "app") {
-        document.title = `Stream: ${data.app.title}`
-        return
-    }
-
-    if (data.type === "connectionComplete") {
-        this.sidebar.onCapabilitiesChange(data.capabilities)
-        requestAnimationFrame(() => hideSplash())
-        return
-    }
-
-    // 🔴 Supervisor explicitly killed the session → leave immediately
-    if (
-        data.type === "addDebugLine" &&
-        data.additional?.type === "fatalDescription"
-    ) {
-        setTimeout(() => this.navigateHome(), 300)
-        return
-    }
-
-    // ⚠️ Any other debug noise → just check server health ONCE
-    if (data.type === "addDebugLine") {
-        const alive = await this.isWebServerAlive()
-        if (!alive) {
-            this.navigateHome()
+        if (data.type === "app") {
+            document.title = `Stream: ${data.app.title}`
+            return
         }
-        // if alive → do nothing
-        return
+
+        if (data.type === "connectionComplete") {
+            this.sidebar.onCapabilitiesChange(data.capabilities)
+            requestAnimationFrame(() => hideSplash())
+            return
+        }
+
+        // 🔴 ONLY handle fatal errors - supervisor explicitly killed the session
+        if (
+            data.type === "addDebugLine" &&
+            data.additional?.type === "fatalDescription"
+        ) {
+            this.handleConnectionLost()
+            return
+        }
+
+        // ✅ IGNORE all other debug messages - they're just informational
+        // The constant server health checks were causing the disconnect loop!
+        if (data.type === "addDebugLine") {
+            console.info(`[Stream Debug] ${data.line}`)
+            // Do NOT check server health here - it causes the loop!
+            return
+        }
     }
-}
-
-
-
 
     private focusInput() {
         if (this.stream?.getInput().getCurrentPredictedTouchAction() != "screenKeyboard" && !this.sidebar.getScreenKeyboard().isVisible()) {
@@ -358,6 +413,7 @@ private async onInfo(event: InfoEvent) {
         this.stream?.getVideoRenderer()?.onUserInteraction()
         this.stream?.getAudioPlayer()?.onUserInteraction()
     }
+    
     private onScreenKeyboardSetVisible(event: ScreenKeyboardSetVisibleEvent) {
         console.info(event.detail)
         const screenKeyboard = this.sidebar.getScreenKeyboard()
@@ -531,12 +587,16 @@ private async onInfo(event: InfoEvent) {
             }
 
             if ("keyboard" in navigator && navigator.keyboard && "lock" in navigator.keyboard) {
-                await navigator.keyboard.lock()
+                try {
+                    await navigator.keyboard.lock()
 
-                if (!this.hasShownFullscreenEscapeWarning) {
-                    await showMessage("To exit Fullscreen you'll have to hold ESC for a few seconds.")
+                    if (!this.hasShownFullscreenEscapeWarning) {
+                        await showMessage("To exit Fullscreen you'll have to hold ESC for a few seconds.")
+                    }
+                    this.hasShownFullscreenEscapeWarning = true
+                } catch (e) {
+                    console.warn("keyboard lock failed", e)
                 }
-                this.hasShownFullscreenEscapeWarning = true
             }
 
             try {
@@ -677,7 +737,7 @@ class ConnectionInfoModal implements Modal<void> {
 
         // ✅ Connection established
         if (data.type === "connectionComplete") {
-            this.text.innerText = "Starting game…"
+            this.text.innerText = "Connected! Click to start..."
             this.eventTarget.dispatchEvent(new Event("ml-connected"))
             return
         }
@@ -724,6 +784,8 @@ class ViewerSidebar implements Component, Sidebar {
     private fullscreenButton = document.createElement("button")
 
     private statsButton = document.createElement("button")
+
+    private reconnectButton = document.createElement("button")
 
     private mouseMode: SelectComponent
     private touchMode: SelectComponent
@@ -792,6 +854,19 @@ class ViewerSidebar implements Component, Sidebar {
             }
         })
         this.buttonDiv.appendChild(this.statsButton)
+
+        // Reconnect Stream
+        this.reconnectButton.innerText = "Reconnect Stream"
+        this.reconnectButton.addEventListener("click", async () => {
+            await showMessage("Reconnecting… This may take 5–10 seconds.")
+
+            this.app.allowPageReload()
+
+            window.location.reload()
+        })
+
+        this.buttonDiv.appendChild(this.reconnectButton)
+
 
         // Select Mouse Mode
         this.mouseMode = new SelectComponent("mouseMode", [
