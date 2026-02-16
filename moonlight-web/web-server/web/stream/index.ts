@@ -101,6 +101,12 @@ export class Stream implements Component {
 
     private streamerSize: [number, number]
 
+    private connectionState: RTCPeerConnectionState = "new"
+    private disconnectStartTime: number | null = null
+    private connectionCheckTimeout: number | null = null
+
+    
+
     constructor(api: Api, hostId: number, appId: number, settings: Settings, viewerScreenSize: [number, number]) {
         this.logger.addInfoListener((info, type) => {
             this.debugLog(info, { type: type ?? undefined })
@@ -154,6 +160,8 @@ export class Stream implements Component {
             this.eventTarget.dispatchEvent(event)
         }
     }
+
+    
 
     private async onMessage(message: StreamServerMessage) {
         if ("DebugLog" in message) {
@@ -313,6 +321,122 @@ export class Stream implements Component {
         }
     }
 
+// Add this method to your Stream class
+private setupConnectionMonitoring(transport: WebRTCTransport) {
+    const peerConnection = transport.getPeerConnection()
+    
+    if (!peerConnection) {
+        this.debugLog("No peer connection available for monitoring")
+        return
+    }
+
+    peerConnection.addEventListener('connectionstatechange', () => {
+        const state = peerConnection.connectionState
+        const previousState = this.connectionState
+        this.connectionState = state
+
+        this.debugLog(`WebRTC connection: ${previousState} → ${state}`)
+
+        switch (state) {
+            case 'connected':
+                this.debugLog('✅ WebRTC connected')
+                this.disconnectStartTime = null
+                this.clearConnectionCheckTimeout()
+                
+                // Dispatch OK status
+                const connectedEvent: InfoEvent = new CustomEvent("stream-info", {
+                    detail: { 
+                        type: "connectionStatus", 
+                        status: "Ok" 
+                    }
+                })
+                this.eventTarget.dispatchEvent(connectedEvent)
+                break
+
+            case 'connecting':
+                this.debugLog('🔄 WebRTC connecting...')
+                break
+
+            case 'disconnected':
+                this.debugLog('⚠️ WebRTC disconnected - waiting for auto-recovery')
+                
+                if (!this.disconnectStartTime) {
+                    this.disconnectStartTime = Date.now()
+                }
+                
+                // Dispatch Poor status (but DON'T treat as fatal yet)
+                const disconnectedEvent: InfoEvent = new CustomEvent("stream-info", {
+                    detail: { 
+                        type: "connectionStatus", 
+                        status: "Poor" 
+                    }
+                })
+                this.eventTarget.dispatchEvent(disconnectedEvent)
+                
+                // Start monitoring - will only trigger fatal after 15s
+                this.scheduleConnectionCheck()
+                break
+
+            case 'failed':
+                // WebRTC has given up completely
+                this.debugLog('❌ WebRTC connection failed permanently', { type: "fatalDescription" })
+                this.clearConnectionCheckTimeout()
+                
+                // Dispatch Poor status
+                const failedEvent: InfoEvent = new CustomEvent("stream-info", {
+                    detail: { 
+                        type: "connectionStatus", 
+                        status: "Poor" 
+                    }
+                })
+                this.eventTarget.dispatchEvent(failedEvent)
+                
+                // Trigger immediate failure handling since WebRTC gave up
+                this.debugLog('Connection lost - WebRTC failed', { type: "fatalDescription" })
+                break
+
+            case 'closed':
+                this.debugLog('🚪 WebRTC connection closed')
+                this.clearConnectionCheckTimeout()
+                break
+        }
+    })
+
+    // Monitor ICE connection state for additional diagnostics
+    peerConnection.addEventListener('iceconnectionstatechange', () => {
+        this.debugLog(`ICE state: ${peerConnection.iceConnectionState}`)
+    })
+}
+
+private scheduleConnectionCheck() {
+    // Clear any existing timeout
+    this.clearConnectionCheckTimeout()
+
+    // Check again in 5 seconds if still disconnected
+    this.connectionCheckTimeout = window.setTimeout(() => {
+        if (this.connectionState === 'disconnected') {
+            const duration = Date.now() - (this.disconnectStartTime || 0)
+            this.debugLog(`Still disconnected after ${Math.round(duration / 1000)}s`)
+            
+            // If disconnected > 15 seconds, it's likely permanent
+            if (duration > 15000) {
+                this.debugLog('Connection lost for >15s - likely permanent', { type: "fatalDescription" })
+                // This will trigger handleConnectionFailed in stream.js
+            } else {
+                // Schedule another check
+                this.scheduleConnectionCheck()
+            }
+        }
+    }, 5000)
+}
+
+private clearConnectionCheckTimeout() {
+    if (this.connectionCheckTimeout) {
+        clearTimeout(this.connectionCheckTimeout)
+        this.connectionCheckTimeout = null
+    }
+}
+
     private onGeneralChannelMessage(data: ArrayBuffer) {
         this.debugLog(`[GENERAL] Received message on GENERAL channel, size=${data.byteLength}`)
         const buffer = new Uint8Array(data)
@@ -367,7 +491,7 @@ export class Stream implements Component {
     }
 
     private async tryWebRTCTransport(): Promise<TransportShutdown> {
-        this.debugLog("Trying WebRTC transport")
+         this.debugLog("Trying WebRTC transport")
 
         this.sendWsMessage({
             SetTransport: "WebRTC"
@@ -385,6 +509,9 @@ export class Stream implements Component {
             iceServers: this.iceServers
         })
         this.setTransport(transport)
+
+        // ✅ Setup connection monitoring AFTER transport is set
+        this.setupConnectionMonitoring(transport)
 
         // Wait for negotiation
         const result = await (new Promise((resolve, _reject) => {

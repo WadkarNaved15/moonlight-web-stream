@@ -222,57 +222,7 @@ class ViewerApp implements Component {
 
     private checkingServer = false
 
-private async handleConnectionLost() {
-    if (this.checkingServer) return
-    this.checkingServer = true
-
-    this.stopHealthWatchdog() 
-    console.warn("🔌 Stream connection lost. Checking server...")
-
-    const alive = await this.isWebServerAlive()
-
-    if (!alive) {
-        console.warn("❌ Web server not reachable.")
-        this.navigateHome()
-    } else {
-        console.warn("✅ Server alive. Allow manual reconnect.")
-    }
-
-    this.checkingServer = false
-}
-
-private healthIntervalId: number | null = null
-
-private startHealthWatchdog() {
-    if (this.healthIntervalId != null) return
-
-    this.healthIntervalId = window.setInterval(async () => {
-        if (!this.stream) return
-
-        try {
-            const alive = await this.isWebServerAlive()
-
-            if (!alive) {
-                console.warn("🚨 Web server unreachable. Navigating home.")
-                this.navigateHome()
-            }
-        } catch {
-            console.warn("🚨 Health check failed. Navigating home.")
-            this.navigateHome()
-        }
-
-    }, 5000) // every 5 seconds (safe)
-}
-
-private stopHealthWatchdog() {
-    if (this.healthIntervalId != null) {
-        clearInterval(this.healthIntervalId)
-        this.healthIntervalId = null
-    }
-}
-
-
-
+    
     private navigateHome() {
         // 🔓 allow navigation without browser prompt
         window.removeEventListener("beforeunload", this.beforeUnloadHandler)
@@ -338,7 +288,6 @@ private stopHealthWatchdog() {
         this.stream.addInfoListener((event) => {
             if (event.detail.type === "connectionComplete") {
                 streamReady = true
-                this.startHealthWatchdog()
                 // ✅ Wait for next user interaction
                 const onFirstInteraction = () => {
                     attemptImmersive()
@@ -367,38 +316,62 @@ private stopHealthWatchdog() {
 
         this.stream.mount(this.div)
     }
+private async onInfo(event: InfoEvent) {
+    const data = event.detail
 
-    private async onInfo(event: InfoEvent) {
-        const data = event.detail
-
-        if (data.type === "app") {
-            document.title = `Stream: ${data.app.title}`
-            return
-        }
-
-        if (data.type === "connectionComplete") {
-            this.sidebar.onCapabilitiesChange(data.capabilities)
-            requestAnimationFrame(() => hideSplash())
-            return
-        }
-
-        // 🔴 ONLY handle fatal errors - supervisor explicitly killed the session
-        if (
-            data.type === "addDebugLine" &&
-            data.additional?.type === "fatalDescription"
-        ) {
-            this.handleConnectionLost()
-            return
-        }
-
-        // ✅ IGNORE all other debug messages - they're just informational
-        // The constant server health checks were causing the disconnect loop!
-        if (data.type === "addDebugLine") {
-            console.info(`[Stream Debug] ${data.line}`)
-            // Do NOT check server health here - it causes the loop!
-            return
-        }
+    if (data.type === "app") {
+        document.title = `Stream: ${data.app.title}`
+        return
     }
+
+    if (data.type === "connectionComplete") {
+        this.sidebar.onCapabilitiesChange(data.capabilities)
+        requestAnimationFrame(() => hideSplash())
+        return
+    }
+
+    // ✅ Handle connection status changes
+    if (data.type === "connectionStatus") {
+        const status = data.status
+        console.info(`🔌 Connection status: ${status}`)
+        
+        // DO NOT call handleConnectionFailed here
+        // Let the Stream class handle the timeout logic
+        
+        return
+    }
+
+    // ✅ Only handle fatal messages with explicit timeout warning
+    if (data.type === "addDebugLine") {
+        console.info(`[Stream] ${data.line}`)
+        
+        // Only navigate home when we get the 15s timeout message
+        if (
+            data.additional?.type === "fatalDescription" 
+        ) {
+            this.handleConnectionFailed()
+        }
+        
+        return
+    }
+}
+
+private async handleConnectionFailed() {
+    console.warn("🔌 Connection failed - checking server health...")
+    
+    // Give one last chance to check if it's a server issue or network issue
+    const alive = await this.isWebServerAlive()
+    
+    if (!alive) {
+        console.error("❌ Server unreachable - navigating home")
+        this.navigateHome()
+    } else {
+        console.warn("✅ Server alive - offering manual reconnect")
+        await showMessage("Connection lost. Click OK to reconnect.")
+        this.allowPageReload()
+        window.location.reload()
+    }
+}
 
     private focusInput() {
         if (this.stream?.getInput().getCurrentPredictedTouchAction() != "screenKeyboard" && !this.sidebar.getScreenKeyboard().isVisible()) {

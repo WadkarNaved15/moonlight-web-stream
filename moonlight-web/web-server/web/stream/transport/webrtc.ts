@@ -62,6 +62,7 @@ export class WebRTCTransport implements Transport {
             this.logger?.debug("Failed to call onicecandidate because no handler is set")
         }
     }
+
     async onReceiveMessage(message: StreamSignalingMessage) {
         if ("Description" in message) {
             const description = message.Description;
@@ -80,6 +81,9 @@ export class WebRTCTransport implements Transport {
         }
     }
 
+     public getPeerConnection(): RTCPeerConnection | null {
+        return this.peer ?? null
+    }
     private async onNegotiationNeeded() {
         // We're polite
         if (!this.peer) {
