@@ -195,15 +195,13 @@ export class WebRTCTransport implements Transport {
 
         if (this.peer.connectionState == "connected") {
             type = "recover"
-            this.setDelayHintInterval(true)
 
             if (this.onconnect) {
                 this.onconnect()
             }
             this.wasConnected = true
-        } else if ((this.peer.connectionState == "failed" || this.peer.connectionState == "closed" || this.peer.connectionState == "disconnected") && this.peer.iceGatheringState == "complete") {
+    } else if ((this.peer.connectionState == "failed" || this.peer.connectionState == "closed") && this.peer.iceGatheringState == "complete") {
             type = "fatal"
-            this.setDelayHintInterval(false)
         }
 
         if (this.peer.connectionState == "failed" || this.peer.connectionState == "closed") {
@@ -249,23 +247,6 @@ export class WebRTCTransport implements Transport {
         }
     }
 
-    private forceDelayInterval: number | null = null
-    private setDelayHintInterval(setRunning: boolean) {
-        if (this.forceDelayInterval == null && setRunning) {
-            this.forceDelayInterval = setInterval(() => {
-                if (!this.peer) {
-                    return
-                }
-
-                for (const receiver of this.peer.getReceivers()) {
-                    // @ts-ignore
-                    receiver.jitterBufferTarget = receiver.jitterBufferDelayHint = receiver.playoutDelayHint = 0
-                }
-            }, 15)
-        } else if (this.forceDelayInterval != null && !setRunning) {
-            clearInterval(this.forceDelayInterval)
-        }
-    }
 
     private channels: Array<TransportChannel | null> = []
     private initChannels() {
@@ -311,8 +292,14 @@ export class WebRTCTransport implements Transport {
     private onTrack(event: RTCTrackEvent) {
         const track = event.track
 
+        const receiver = event.receiver
         if (track.kind == "video") {
-            this.videoReceiver = event.receiver
+                        this.videoReceiver = receiver
+        }
+
+        receiver.jitterBufferTarget = 0
+        if ("playoutDelayHint" in receiver) {
+            receiver.playoutDelayHint = 0
         }
 
         this.logger?.debug(`Adding receiver: ${track.kind}, ${track.id}, ${track.label}`)

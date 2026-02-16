@@ -3,6 +3,13 @@ import { BIG_BUFFER, ByteBuffer } from "./buffer.js"
 import { Logger } from "./log.js"
 import { DataTransportChannel, Transport } from "./transport/index.js"
 
+export type NetworkQuality =
+    | "excellent"
+    | "good"
+    | "fair"
+    | "poor"
+    | "critical";
+
 export type StreamStatsData = {
     videoCodec: string | null
     videoWidth: number | null
@@ -21,6 +28,16 @@ export type StreamStatsData = {
     avgStreamerProcessingTimeMs: number | null
     browserRtt: number | null
     transport: Record<string, string>
+    networkQuality: NetworkQuality | null
+    packetLossPercent: number | null
+    rttMs: number | null
+    jitterMs: number | null
+    availableIncomingBitrateMbps: number | null
+    availableOutgoingBitrateMbps: number | null
+    actualIncomingBitrateMbps: number | null
+    actualOutgoingBitrateMbps: number | null
+    freezeCount: number | null
+    freezeDurationMs: number | null
 }
 
 function num(value: number | null | undefined, suffix?: string): string | null {
@@ -41,7 +58,32 @@ streamer round trip time: ${num(statsData.streamerRttMs, "ms")} (variance: ${num
 host processing latency min/max/avg: ${num(statsData.minHostProcessingLatencyMs, "ms")} / ${num(statsData.maxHostProcessingLatencyMs, "ms")} / ${num(statsData.avgHostProcessingLatencyMs, "ms")}
 streamer processing latency min/max/avg: ${num(statsData.minStreamerProcessingTimeMs, "ms")} / ${num(statsData.maxStreamerProcessingTimeMs, "ms")} / ${num(statsData.avgStreamerProcessingTimeMs, "ms")}
 streamer to browser rtt (ws only): ${num(statsData.browserRtt, "ms")}
-`
+network quality: ${statsData.networkQuality}
+
+RTT: ${num(statsData.rttMs,"ms")}
+
+Jitter: ${num(statsData.jitterMs,"ms")}
+
+Packet loss:
+${num(statsData.packetLossPercent,"%")}
+
+Incoming bitrate:
+${num(statsData.actualIncomingBitrateMbps," Mbps")}
+
+Outgoing bitrate:
+${num(statsData.actualOutgoingBitrateMbps," Mbps")}
+
+Available incoming:
+${num(statsData.availableIncomingBitrateMbps," Mbps")}
+
+Available outgoing:
+${num(statsData.availableOutgoingBitrateMbps," Mbps")}
+
+Video freezes:
+${statsData.freezeCount}
+
+Freeze duration:
+${num(statsData.freezeDurationMs,"ms")}`
     for (const key in statsData.transport) {
         const value = statsData.transport[key]
         let valuePretty = value
@@ -64,6 +106,7 @@ export class StreamStats {
     private transport: Transport | null = null
     private statsChannel: DataTransportChannel | null = null
     private updateIntervalId: number | null = null
+    private lastQuality: string | null = null;
 
     private statsData: StreamStatsData = {
         videoCodec: null,
@@ -82,12 +125,38 @@ export class StreamStats {
         maxStreamerProcessingTimeMs: null,
         avgStreamerProcessingTimeMs: null,
         browserRtt: null,
-        transport: {}
+        transport: {},
+        networkQuality: null,
+        packetLossPercent: null,
+        rttMs: null,
+        jitterMs: null,
+        availableIncomingBitrateMbps: null,
+        availableOutgoingBitrateMbps: null,
+        actualIncomingBitrateMbps: null,
+        actualOutgoingBitrateMbps: null,
+        freezeCount: null,
+        freezeDurationMs: null,
     }
+    private networkQualityListeners:
+((quality: NetworkQuality)=>void)[] = [];
 
     constructor(logger?: Logger) {
         if (logger) {
             this.logger = logger
+        }
+    }
+
+    addNetworkQualityListener(
+        listener: (quality: NetworkQuality)=>void
+    ) {
+        this.networkQualityListeners.push(listener);
+    }
+
+    private emitNetworkQuality(
+        quality: NetworkQuality
+    ) {
+        for (const listener of this.networkQualityListeners) {
+            listener(quality);
         }
     }
 
@@ -130,6 +199,12 @@ export class StreamStats {
     }
     isEnabled(): boolean {
         return this.enabled
+    }
+    isConnectionPoor(): boolean {
+        return (
+            this.statsData.networkQuality === "poor" ||
+            this.statsData.networkQuality === "critical"
+        );
     }
     toggle() {
         this.setEnabled(!this.isEnabled())
@@ -177,12 +252,72 @@ export class StreamStats {
             return
         }
 
-        const stats = await this.transport?.getStats()
-        for (const key in stats) {
-            const value = stats[key]
 
-            this.statsData.transport[key] = value
-        }
+        const stats = await this.transport?.getStats()
+                if (
+    stats.networkQuality &&
+    stats.networkQuality !== this.lastQuality
+) {
+
+    this.lastQuality = stats.networkQuality;
+
+    this.emitNetworkQuality(stats.networkQuality as NetworkQuality);
+
+
+}
+
+if (stats.packetLossPercent !== null)
+    this.statsData.packetLossPercent =
+        parseFloat(stats.packetLossPercent)
+
+if (stats.webrtcRttMs !== null)
+    this.statsData.rttMs =
+        parseFloat(stats.webrtcRttMs)
+
+if (stats.webrtcJitterMs !== null)
+    this.statsData.jitterMs =
+        parseFloat(stats.webrtcJitterMs)
+
+if (stats.availableIncomingBitrateMbps !== null)
+    this.statsData.availableIncomingBitrateMbps =
+        parseFloat(stats.availableIncomingBitrateMbps)
+
+if (stats.availableOutgoingBitrateMbps !== null)
+    this.statsData.availableOutgoingBitrateMbps =
+        parseFloat(stats.availableOutgoingBitrateMbps)
+
+if (stats.actualIncomingBitrateMbps !== null)
+    this.statsData.actualIncomingBitrateMbps =
+        parseFloat(stats.actualIncomingBitrateMbps)
+
+if (stats.actualOutgoingBitrateMbps !== null)
+    this.statsData.actualOutgoingBitrateMbps =
+        parseFloat(stats.actualOutgoingBitrateMbps)
+
+if (stats.freezeCount !== null)
+    this.statsData.freezeCount =
+        parseInt(stats.freezeCount)
+
+if (stats.freezeDurationMs !== null)
+    this.statsData.freezeDurationMs =
+        parseFloat(stats.freezeDurationMs)
+
+if (stats.networkQuality){
+const quality = stats.networkQuality;
+
+if (
+    quality === "excellent" ||
+    quality === "good" ||
+    quality === "fair" ||
+    quality === "poor" ||
+    quality === "critical"
+) {
+    this.statsData.networkQuality = quality;
+}
+}
+            this.statsData.transport = { ...stats }
+
+        
     }
 
     setVideoInfo(codec: string, width: number, height: number, fps: number) {

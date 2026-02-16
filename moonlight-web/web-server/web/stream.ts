@@ -11,7 +11,10 @@ import { SelectComponent } from "./component/input.js";
 import { LogMessageType, StreamCapabilities, StreamKeys } from "./api_bindings.js";
 import { ScreenKeyboard, TextEvent } from "./screen_keyboard.js";
 import { FormModal } from "./component/modal/form.js";
-import { streamStatsToText } from "./stream/stats.js";
+import {
+    streamStatsToText,
+    type NetworkQuality
+} from "./stream/stats.js";
 
 // Lock UI immediately
 document.body.classList.add("loading")
@@ -21,7 +24,14 @@ function getStreamToken() {
     return host.split(".")[0]
 }
 
+// Guard against a second heartbeat interval being started if
+// ConnectionComplete fires again after a reconnect.
+let heartbeatStarted = false
+
 function startHeartbeat() {
+    if (heartbeatStarted) return
+    heartbeatStarted = true
+
     const token = getStreamToken()
 
     if (!token) {
@@ -55,17 +65,18 @@ function hideSplash() {
     splash.classList.add("sc-fadeout")
     document.body.classList.remove("loading")
 
-    // 2. Wait for the 0.8s animation to finish, then clean up completely
+    // Wait for the 0.8s animation to finish, then clean up completely
     setTimeout(() => {
         // Stop the heavy canvas background animations to save CPU/Battery
         if (typeof (window as any).cleanupSplashScreen === "function") {
             (window as any).cleanupSplashScreen()
         }
-        
+
         // Remove from DOM
         splash.remove()
     }, 800)
 }
+
 async function startApp() {
     const api = await getApi()
 
@@ -75,17 +86,8 @@ async function startApp() {
         return;
     }
 
-    const queryParams = new URLSearchParams(location.search)
-
-    const hostIdStr = queryParams.get("hostId")
-    const appIdStr = queryParams.get("appId")
-    if (hostIdStr == null || appIdStr == null) {
-        await showMessage("No Host or no App Id found")
-        window.close()
-        return
-    }
-    const hostId = Number.parseInt(hostIdStr)
-    const appId = Number.parseInt(appIdStr)
+    const hostId = 2299598189
+    const appId = 881448767
 
     const sidebarRoot = getSidebarRoot()
     if (sidebarRoot) {
@@ -150,30 +152,74 @@ class ViewerApp implements Component {
     private previousMouseMode: MouseMode
     private toggleFullscreenWithKeybind: boolean
     private hasShownFullscreenEscapeWarning = false
-    
+
     private immersiveTransitionInProgress = false
 
+    // -- Session identity, kept around so a reconnect can recreate Stream identically
+    private hostId: number
+    private appId: number
+    private browserSize: [number, number] = [0, 0]
+
+    // -- Reconnect state (ViewerApp owns the entire reconnect workflow)
+    private reconnecting = false
+    private reconnectAttemptCount = 0
+    private currentStreamIsReconnect = false
+    private reconnectWindowStart: number | null = null
+    private reconnectTimer: number | null = null
+    private permanentFailureShown = false
+
+private readonly RECONNECT_DELAYS =
+[
+    0,
+    1000,
+    2000,
+    4000,
+    8000,
+    8000,
+    8000
+]
+    private readonly RECONNECT_WINDOW_MS = 90000 // ~30-45s of retrying before giving up
+    private readonly RECONNECT_GRACE_MS = 15000 // let a brief "disconnected" blip self-heal before tearing Stream down
+
+    private reconnectGraceTimer: number | null = null
+
+    private toastEl: HTMLDivElement | null = null
+private toastTimerWrapper: HTMLDivElement | null = null;
+
+private toastTimerCircle: SVGCircleElement | null = null;
+
+private toastTimerText: HTMLSpanElement | null = null;
+
+private toastAnimation: number | null = null;
+
+private countdownStart = 0;
+    private toastTextEl: HTMLSpanElement | null = null
+
+    // -- Legacy fallback dialog state, used only by navigateHome()'s
+    //    "navigation didn't happen" safety net. Not part of the
+    //    temporary-network-failure reconnect path.
     private connectionRecoveryInProgress = false;
     private recoveryTimeout: number | null = null;
     private recoveryInterval: number | null = null;
-
-        // private beforeUnloadHandler = (e: BeforeUnloadEvent) => {
-        //     e.preventDefault()
-        //     e.returnValue = ""
-        // }
-
-        // public allowPageReload() {
-        //     window.removeEventListener("beforeunload", this.beforeUnloadHandler)
-        // }
+    private fallbackRecoveryTimer: number | null = null;
 
     // -- Connection health tracking
     private navigatingHome = false
     private lastConnectionStatus: string = "Ok"
+    private transportConnected = false;
+    private connectionCompleteReceived = false;
+    private iceHealthy = false;
     private serverAliveCache: boolean | null = null
     private serverCheckPromise: Promise<boolean> | null = null
+    private lastNetworkToast:
+NetworkQuality | null = null;
+
+private toastTimeout: number | null = null;
 
     constructor(api: Api, hostId: number, appId: number) {
         this.api = api
+        this.hostId = hostId
+        this.appId = appId
 
         history.replaceState(null, "", location.href)
         history.pushState(null, "", location.href)
@@ -181,8 +227,6 @@ class ViewerApp implements Component {
         window.addEventListener("popstate", () => {
             history.pushState(null, "", location.href)
         })
-
-        // window.addEventListener("beforeunload", this.beforeUnloadHandler)
 
         this.sidebar = new ViewerSidebar(this)
         setSidebar(this.sidebar)
@@ -202,30 +246,29 @@ class ViewerApp implements Component {
         }, 1000)
         this.div.appendChild(this.statsDiv)
 
-        const settings = getLocalStreamSettings() ?? defaultSettings()
+        this.buildReconnectToast()
 
-        let browserWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0)
-        let browserHeight = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0)
+        const settings = getLocalStreamSettings() ?? defaultSettings()
 
         this.previousMouseMode = this.inputConfig.mouseMode
         this.toggleFullscreenWithKeybind = settings.toggleFullscreenWithKeybind
-        this.startStream(hostId, appId, settings, [0, 0])
-
         this.settings = settings
+
+        this.startStream(hostId, appId, settings, [0, 0])
 
         this.addListeners(document)
         this.addListeners(document.getElementById("input") as HTMLDivElement)
 
         window.addEventListener("blur", () => {
-        if (!this.immersiveTransitionInProgress) {
-            this.stream?.getInput().raiseAllKeys()
-        }
-    })
-    document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState !== "visible" && !this.immersiveTransitionInProgress) {
-            this.stream?.getInput().raiseAllKeys()
-        }
-    })
+            if (!this.immersiveTransitionInProgress) {
+                this.stream?.getInput().raiseAllKeys()
+            }
+        })
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState !== "visible" && !this.immersiveTransitionInProgress) {
+                this.stream?.getInput().raiseAllKeys()
+            }
+        })
 
         document.addEventListener("pointerlockchange", this.onPointerLockChange.bind(this))
         document.addEventListener("fullscreenchange", this.onFullscreenChange.bind(this))
@@ -240,22 +283,96 @@ class ViewerApp implements Component {
     }
 
 
-private fallbackRecoveryTimer: number | null = null;
+private onNetworkQualityChanged(quality: NetworkQuality) {
 
-private navigateHome(reason: string , homeUrl: string = getHomeOrigin()) {
-    if (this.navigatingHome) return;
+    // Ignore repeated values
+    if (quality === this.lastNetworkToast) {
+        return;
+    }
 
-    this.navigatingHome = true;
+    const previous = this.lastNetworkToast;
+    this.lastNetworkToast = quality;
 
-    window.location.replace(homeUrl);
+    switch (quality) {
 
-    // If we're somehow still here after 2 seconds,
-    // show the recovery dialog instead of leaving the
-    // user on a frozen page.
-    this.fallbackRecoveryTimer = window.setTimeout(() => {
-        this.handleConnectionFailed(true);
-    }, 2000);
+        case "poor":
+            this.showToast(
+                "warn",
+                "Poor connection",
+                "Gameplay may stutter."
+            );
+            break;
+
+        case "critical":
+            this.showToast(
+                "warn",
+                "Very poor connection",
+                "Connection may disconnect."
+            );
+            break;
+
+        case "good":
+        case "excellent":
+
+            // Only notify if we were previously in a bad state
+            if (previous === "poor" || previous === "critical") {
+
+                this.showToast(
+                    "ok",
+                    "Connection restored",
+                    ""
+                );
+
+                if (this.toastTimeout) {
+                    clearTimeout(this.toastTimeout);
+                }
+
+                this.toastTimeout = window.setTimeout(() => {
+                    this.hideToast();
+                }, 2000);
+            }
+
+            return;
+
+        default:
+            return; // Ignore "fair"
+    }
+
+    if (this.toastTimeout) {
+        clearTimeout(this.toastTimeout);
+    }
+
+    this.toastTimeout = window.setTimeout(() => {
+        this.hideToast();
+    }, 3000);
 }
+
+    private navigateHome(reason: string, homeUrl: string = getHomeOrigin()) {
+        if (this.navigatingHome) return;
+
+        this.navigatingHome = true;
+
+        // We're leaving the page: any in-flight reconnect attempt is now moot.
+        if (this.reconnectTimer != null) {
+            clearTimeout(this.reconnectTimer)
+            this.reconnectTimer = null
+        }
+        if (this.reconnectGraceTimer != null) {
+            clearTimeout(this.reconnectGraceTimer)
+            this.reconnectGraceTimer = null
+        }
+        this.reconnecting = false
+        this.hideToast()
+
+        window.location.replace(homeUrl);
+
+        // If we're somehow still here after 2 seconds,
+        // show the recovery dialog instead of leaving the
+        // user on a frozen page.
+        this.fallbackRecoveryTimer = window.setTimeout(() => {
+            this.handleConnectionFailed(true);
+        }, 2000);
+    }
 
     private addListeners(element: GlobalEventHandlers) {
         element.addEventListener("keydown", this.onKeyDown.bind(this), { passive: false })
@@ -273,80 +390,93 @@ private navigateHome(reason: string , homeUrl: string = getHomeOrigin()) {
         element.addEventListener("touchmove", this.onTouchMove.bind(this), { passive: false })
     }
 
-    private async startStream(hostId: number, appId: number, settings: Settings, browserSize: [number, number]) {
+    private async startStream(hostId: number, appId: number, settings: Settings, browserSize: [number, number], isReconnect: boolean = false) {
+        this.hostId = hostId
+        this.appId = appId
+        this.browserSize = browserSize
+        this.currentStreamIsReconnect = isReconnect
+        
+
         setSidebarStyle({
             edge: settings.sidebarEdge,
         })
 
         this.stream = new Stream(this.api, hostId, appId, settings, browserSize)
+        const stats = this.stream.getStats();
+
+stats?.addNetworkQualityListener(
+    this.onNetworkQualityChanged.bind(this)
+);
 
         this.stream.addInfoListener(this.onInfo.bind(this))
 
-this.stream.addGameExitListener(async () => {
-    const token = getStreamToken();
+        this.stream.addGameExitListener(async () => {
+            const token = getStreamToken();
 
-    const sleep = (ms: number) =>
-        new Promise(resolve => setTimeout(resolve, ms));
+            const sleep = (ms: number) =>
+                new Promise(resolve => setTimeout(resolve, ms));
 
-    try {
-        // Retry for up to 3 seconds because backend cleanup
-        // may take a moment after GameExit.
-        for (let attempt = 0; attempt < 6; attempt++) {
+            try {
+                // Retry for up to 3 seconds because backend cleanup
+                // may take a moment after GameExit.
+                for (let attempt = 0; attempt < 6; attempt++) {
 
-            const res = await fetch(
-                `https://backend.rigzer.com/api/sessions/status-by-token/${token}`,
-                {
-                    method: "GET",
-                    credentials: "include",
+                    const res = await fetch(
+                        `https://backend.rigzer.com/api/sessions/status-by-token/${token}`,
+                        {
+                            method: "GET",
+                            credentials: "include",
+                        }
+                    );
+
+
+                    if (res.status === 404) {
+                        this.navigateHome("Session ended (token not found)");
+                        return;
+                    }
+
+                    if (!res.ok) {
+                        throw new Error(`HTTP ${res.status}`);
+                    }
+
+                    const data = await res.json();
+
+                    if (!data.active) {
+                        this.navigateHome("Session ended");
+                        return;
+                    }
+
+                    // Session still active.
+                    // Wait 500ms before checking again because
+                    // Redis cleanup may still be in progress.
+                    await sleep(500);
                 }
-            );
 
-            console.log(
-                `[STATUS] Attempt ${attempt + 1} HTTP ${res.status}`
-            );
+                // Token never disappeared.
+                // Treat this as a normal network issue and let
+                // transportState/handleConnectionFailed deal with it.
 
-            if (res.status === 404) {
-                console.log("[STATUS] Session token not found");
-                this.navigateHome("Session ended (token not found)");
-                return;
+            } catch (err) {
+                console.error("[STATUS] Check failed", err);
+                this.navigateHome("Session ended (server error)");
             }
+        });
 
-            if (!res.ok) {
-                throw new Error(`HTTP ${res.status}`);
-            }
-
-            const data = await res.json();
-
-            if (!data.active) {
-                console.log("[STATUS] Session ended");
-                this.navigateHome("Session ended");
-                return;
-            }
-
-            // Session still active.
-            // Wait 500ms before checking again because
-            // Redis cleanup may still be in progress.
-            await sleep(500);
+        if (!isReconnect) {
+            const connectionInfo = new ConnectionInfoModal()
+            this.stream.addInfoListener(connectionInfo.onInfo.bind(connectionInfo))
+            showModal(connectionInfo)
         }
 
-        // Token never disappeared.
-        // Treat this as a normal network issue and let
-        // connectionStatus/handleConnectionFailed deal with it.
-
-    } catch (err) {
-        console.error("[STATUS] Check failed", err);
-        this.navigateHome("Session ended (server error)");
-    }
-});
-
-        const connectionInfo = new ConnectionInfoModal()
-        this.stream.addInfoListener(connectionInfo.onInfo.bind(connectionInfo))
-        showModal(connectionInfo)
-
-        this.onTouchUpdate()
-        this.onGamepadUpdate()
+        if (!isReconnect) {
+            this.onTouchUpdate()
+            this.onGamepadUpdate()
+        }
 
         this.stream.getInput().addScreenKeyboardVisibleEvent(this.onScreenKeyboardSetVisible.bind(this))
+        // Reapply saved input config (mouse mode, controller config, etc.)
+        // so a reconnect doesn't reset it to defaults.
+        this.stream.getInput().setConfig(this.inputConfig)
 
         this.stream.mount(this.div)
     }
@@ -358,10 +488,22 @@ this.stream.addGameExitListener(async () => {
             document.title = `Stream: ${data.app.title}`
             return
         }
-
         if (data.type === "connectionComplete") {
             this.sidebar.onCapabilitiesChange(data.capabilities);
             startHeartbeat();
+
+            if (this.currentStreamIsReconnect) {
+                // The new Stream instance reached ConnectionComplete —
+                // the reconnect succeeded. Don't re-run the first-connect
+                // splash/fullscreen prompt: the browser is already in
+                // fullscreen from before, so requesting it again (and
+                // showing the "press ESC" modal) would just force the
+                // user to dismiss a modal for no reason.
+                if (this.reconnecting) {
+                    this.onReconnectSuccess()
+                }
+                return
+            }
 
             requestAnimationFrame(async () => {
                 hideSplash();
@@ -383,82 +525,508 @@ this.stream.addGameExitListener(async () => {
             return;
         }
 
+        if (data.type === "transportState") {
+            if (data.state === "failed") {
+                // Definitive - skip the grace period and act immediately.
+                if (this.reconnectGraceTimer != null) {
+                    clearTimeout(this.reconnectGraceTimer)
+                    this.reconnectGraceTimer = null
+                }
+                this.beginReconnect()
+            } else if (data.state === "connected" && this.reconnecting) {
+                this.onReconnectSuccess()
+            }
+            // "closed" is informational only here; voluntary teardown
+            // (End Stream, GameExit, navigateHome) is handled elsewhere.
+            return
+        }
+
         if (data.type === "connectionStatus") {
-    this.lastConnectionStatus = data.status;
+            this.lastConnectionStatus = data.status;
 
-    if (data.status === "Ok") {
-        if (this.recoveryTimeout) {
-            clearTimeout(this.recoveryTimeout);
-            this.recoveryTimeout = null;
-        }
+            if (data.status === "Ok") {
+                // Cancel a pending grace timer if the blip healed on its own.
+                if (this.reconnectGraceTimer != null) {
+                    clearTimeout(this.reconnectGraceTimer)
+                    this.reconnectGraceTimer = null
+                    this.hideToast()
+                }
+                // transportState "connected" is the normal success signal, but
+                // fall back to this in case a transport path doesn't emit it.
+                if (this.reconnecting) {
+                    this.onReconnectSuccess()
+                }
 
-        if (this.recoveryInterval) {
-            clearInterval(this.recoveryInterval);
-            this.recoveryInterval = null;
-        }
+                if (this.recoveryTimeout) {
+                    clearTimeout(this.recoveryTimeout);
+                    this.recoveryTimeout = null;
+                }
 
-        this.connectionRecoveryInProgress = false;
-    }
+                if (this.recoveryInterval) {
+                    clearInterval(this.recoveryInterval);
+                    this.recoveryInterval = null;
+                }
 
-    if (
-        data.status === "Poor" &&
-        !this.connectionRecoveryInProgress
-    ) {
-        this.handleConnectionFailed();
-    }
+                this.connectionRecoveryInProgress = false;
+            }
 
-    return;
-}
-        if (data.type === "addDebugLine") {
-            console.info(`[Stream] ${data.line}`)
-
-            // Handle WebRTC-level fatal errors (network failure, not game exit)
-            // ConnectionTerminated is handled by addGameExitListener, not here
-            // if (data.additional?.type === "fatalDescription") {
-            //     this.handleConnectionFailed()
+            // if (data.status === "Poor") {
+            //     // React the moment the connection looks bad (fires on
+            //     // WebRTC's "disconnected" state, well before "failed"),
+            //     // instead of waiting for the slower "failed" transition.
+            //     this.onConnectionPoor()
             // }
 
+            return;
+        }
+        if (data.type === "addDebugLine") {
+            console.info(`[Stream] ${data.line}`)
             return
         }
     }
 
-private async handleConnectionFailed(isFallback: boolean = false) {
-    if (this.navigatingHome && !isFallback) return;
+    // ---------------------------------------------------------------
+    // Reconnect workflow (temporary network loss). Owns: destroying
+    // the old Stream, creating a fresh one, toast + backoff, and the
+    // permanent-failure dialog. Never reloads the page.
+    // ---------------------------------------------------------------
 
-    if (this.connectionRecoveryInProgress) {
-        console.log("Recovery already running");
+    private onConnectionPoor() {
+        if (this.navigatingHome || this.permanentFailureShown) return
+        if (this.reconnecting) return // already past the grace stage and retrying
+        if (this.reconnectGraceTimer != null) return // grace already pending
+
+        // Give feedback the moment things look bad, even though the
+        // underlying transport may still self-heal within a couple seconds.
+this.showToast(
+"warn",
+"Connection lost",
+"Waiting for connection..."
+);
+
+this.startReconnectCountdown();
+
+        this.reconnectGraceTimer = window.setTimeout(() => {
+            this.reconnectGraceTimer = null
+            this.beginReconnect()
+        }, this.RECONNECT_GRACE_MS)
+    }
+
+    private beginReconnect() {
+
+        if (this.navigatingHome || this.permanentFailureShown) return
+
+        if (!this.reconnecting) {
+            this.reconnecting = true
+            this.reconnectAttemptCount = 0
+            this.reconnectWindowStart = Date.now()
+            this.transportConnected = false;
+            this.connectionCompleteReceived = false;
+            this.iceHealthy = false;
+this.showToast(
+"warn",
+"Connecting...",
+"Creating new stream..."
+);
+        }
+
+        this.scheduleReconnectAttempt()
+    }
+
+    private scheduleReconnectAttempt() {
+        if (this.reconnectTimer != null) return // an attempt is already queued
+
+        const elapsed = Date.now() - (this.reconnectWindowStart ?? Date.now())
+        if (elapsed >= this.RECONNECT_WINDOW_MS) {
+            this.declarePermanentFailure()
+            return
+        }
+
+        const delayIndex = Math.min(this.reconnectAttemptCount, this.RECONNECT_DELAYS.length - 1)
+        const delay = this.RECONNECT_DELAYS[delayIndex]
+
+        this.reconnectTimer = window.setTimeout(() => {
+            this.reconnectTimer = null
+            this.reconnectAttemptCount++
+            this.performReconnectAttempt()
+        }, delay)
+    }
+
+private async performReconnectAttempt() {
+
+    if (!this.reconnecting || this.navigatingHome)
+        return;
+
+    const elapsed =
+        Date.now() -
+        (this.reconnectWindowStart ?? Date.now());
+
+    if (elapsed >= this.RECONNECT_WINDOW_MS) {
+        await this.declarePermanentFailure();
         return;
     }
 
-    this.connectionRecoveryInProgress = true;
+    const oldStream = this.stream;
 
-    const timeout = isFallback ? 3000 : 15000;
+    this.stream = null;
 
-    this.recoveryTimeout = window.setTimeout(async () => {
-        this.connectionRecoveryInProgress = false;
+    if (oldStream) {
 
-        await showMessage(
-            "Click Reconnect to continue.",
-            {
-                title: "Connection Lost",
-                confirmText: "Reconnect",
-                variant: "error"
-            }
+        try {
+            oldStream.unmount(this.div);
+        } catch {}
+
+        try {
+            oldStream.destroy();
+        } catch {}
+
+    }
+
+    await new Promise(resolve =>
+        setTimeout(resolve, 500)
+    );
+
+    await this.startStream(
+        this.hostId,
+        this.appId,
+        this.settings,
+        this.browserSize,
+        true
+    );
+
+    await new Promise(resolve =>
+    setTimeout(resolve, 8000)
+);
+
+if (
+    this.reconnecting &&
+    this.lastConnectionStatus !== "Ok"
+) {
+
+    this.scheduleReconnectAttempt();
+
+}
+
+}
+
+    private onReconnectSuccess() {
+        if (this.reconnectTimer != null) {
+            clearTimeout(this.reconnectTimer)
+            this.reconnectTimer = null
+        }
+        if (this.reconnectGraceTimer != null) {
+            clearTimeout(this.reconnectGraceTimer)
+            this.reconnectGraceTimer = null
+        }
+        this.reconnecting = false
+        this.reconnectAttemptCount = 0
+        this.reconnectWindowStart = null
+        this.permanentFailureShown = false
+
+        this.showToast("ok", "Reconnected", "")
+        window.setTimeout(() => this.hideToast(), 2000)
+    }
+
+    private async declarePermanentFailure() {
+        this.reconnecting = false
+        this.permanentFailureShown = true
+        this.hideToast()
+
+        // NOTE: assumes showMessage supports a second (cancel) button via
+        // cancelText, returning a falsy/rejected result when it's chosen.
+        // Verify against the actual Modal implementation before shipping.
+        const modal = new PermanentFailureModal()
+        const retried = await showModal(modal)
+
+        if (retried) {
+            this.permanentFailureShown = false
+            this.reconnecting = true
+            this.reconnectAttemptCount = 0
+            this.reconnectWindowStart = Date.now()
+            this.showToast("warn", "Connection lost", "Reconnecting…")
+            this.performReconnectAttempt()
+        } else {
+            await this.exitStreamAndGoHome()
+        }
+    }
+
+    private async exitStreamAndGoHome() {
+        const token = getStreamToken()
+        try {
+            await fetch(
+                `https://backend.rigzer.com/api/sessions/cancel-by-token/${token}`,
+                { method: "POST", credentials: "include" }
+            )
+        } catch (e) {
+            console.error("Failed to cancel session on exit", e)
+        }
+        window.location.replace(getHomeOrigin())
+    }
+
+    // -- Toast (bottom-right) --------------------------------------
+
+    private buildReconnectToast() {
+        const toast = document.createElement("div")
+        toast.style.cssText = `
+            position: fixed;
+            right: 20px;
+            bottom: 20px;
+            z-index: 100000;
+            display: none;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 12px 16px;
+            border-radius: 12px;
+            background: rgba(13,13,13,0.92);
+            border: 1px solid rgba(255,255,255,0.08);
+            backdrop-filter: blur(12px);
+            color: #f2f2f2;
+            font-size: 13px;
+            font-family: inherit;
+            line-height: 1.3;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            pointer-events: none;
+        `
+        const timer=document.createElement("div");
+
+timer.style.cssText=`
+width:24px;
+height:24px;
+position:relative;
+flex-shrink:0;
+display:flex;
+align-items:center;
+justify-content:center;
+`;
+
+const svg=document.createElementNS(
+"http://www.w3.org/2000/svg",
+"svg"
+);
+
+svg.setAttribute("viewBox","0 0 24 24");
+
+svg.style.cssText=`
+width:24px;
+height:24px;
+`;
+
+const bg=document.createElementNS(
+"http://www.w3.org/2000/svg",
+"circle"
+);
+
+bg.setAttribute("cx","12");
+bg.setAttribute("cy","12");
+bg.setAttribute("r","9");
+
+bg.setAttribute("fill","none");
+bg.setAttribute("stroke","rgba(255,255,255,.18)");
+bg.setAttribute("stroke-width","2");
+
+const fg=document.createElementNS(
+"http://www.w3.org/2000/svg",
+"circle"
+);
+
+fg.setAttribute("cx","12");
+fg.setAttribute("cy","12");
+fg.setAttribute("r","9");
+
+fg.setAttribute("fill","none");
+fg.setAttribute("stroke","#ffffff");
+fg.setAttribute("stroke-width","2");
+fg.setAttribute("stroke-linecap","round");
+
+const circumference=2*Math.PI*9;
+
+fg.style.strokeDasharray=`${circumference}`;
+fg.style.strokeDashoffset="0";
+
+fg.style.transform="rotate(-90deg)";
+fg.style.transformOrigin="50% 50%";
+
+svg.appendChild(bg);
+svg.appendChild(fg);
+
+const number=document.createElement("span");
+
+number.style.cssText=`
+position:absolute;
+font-size:10px;
+font-weight:600;
+color:white;
+line-height:1;
+`;
+
+timer.appendChild(svg);
+timer.appendChild(number);
+
+toast.appendChild(timer);
+
+this.toastTimerWrapper=timer;
+this.toastTimerCircle=fg;
+this.toastTimerText=number;
+
+const text=document.createElement("span");
+toast.appendChild(text);
+        toast.appendChild(text)
+        document.body.appendChild(toast)
+
+        this.toastEl = toast
+this.toastTimerWrapper=timer;
+this.toastTimerCircle=fg;
+this.toastTimerText=number;
+        this.toastTextEl = text
+    }
+
+    private startReconnectCountdown(){
+
+    if(
+        !this.toastTimerCircle||
+        !this.toastTimerText
+    ){
+        return;
+    }
+
+    if(this.toastAnimation){
+        cancelAnimationFrame(
+            this.toastAnimation
+        );
+    }
+
+    this.countdownStart=performance.now();
+
+    const radius=9;
+
+    const circumference=
+        2*Math.PI*radius;
+
+    const animate=(now:number)=>{
+
+        const elapsed=
+            now-this.countdownStart;
+
+        const remaining=
+            Math.max(
+                0,
+                this.RECONNECT_GRACE_MS-elapsed
+            );
+
+        const progress=
+            elapsed/
+            this.RECONNECT_GRACE_MS;
+
+        this.toastTimerText!.textContent=
+            `${Math.ceil(remaining/1000)}`;
+
+        this.toastTimerCircle!.style.strokeDashoffset=
+            `${circumference*progress}`;
+
+        if(
+            remaining>0 &&
+            this.reconnectGraceTimer!=null
+        ){
+
+            this.toastAnimation=
+                requestAnimationFrame(
+                    animate
+                );
+
+        }
+    };
+
+    this.toastAnimation=
+        requestAnimationFrame(
+            animate
         );
 
-        // User clicked Reconnect
-        window.location.reload();
-
-    }, timeout);
-
-    this.recoveryInterval = window.setInterval(() => {
-        if (this.lastConnectionStatus === "Ok") {
-            clearTimeout(this.recoveryTimeout!);
-            clearInterval(this.recoveryInterval!);
-            this.connectionRecoveryInProgress = false;
-        }
-    }, 1000);
 }
+
+    private showToast(kind: "warn" | "ok", title: string, subtitle: string) {
+        if (!this.toastEl || !this.toastTextEl) {
+            this.buildReconnectToast()
+        }
+        if (!this.toastEl || !this.toastTextEl) return
+
+if(kind==="warn"){
+
+    this.toastTimerWrapper!.style.display="flex";
+
+}
+else{
+
+    this.toastTimerWrapper!.style.display="none";
+
+}
+        this.toastTextEl.innerHTML = subtitle
+            ? `<div>${title}</div><div style="opacity:.65;font-size:11px;margin-top:2px;">${subtitle}</div>`
+            : `<div>${title}</div>`
+
+        this.toastEl.style.borderColor = kind === "warn"
+            ? "rgba(255,196,0,0.35)"
+            : "rgba(98,212,174,0.4)"
+
+        this.toastEl.style.display = "flex"
+    }
+
+    private hideToast() {
+        if(this.toastAnimation){
+
+    cancelAnimationFrame(
+        this.toastAnimation
+    );
+
+    this.toastAnimation=null;
+}
+        if (this.toastEl) {
+            this.toastEl.style.display = "none"
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Legacy fallback path: used only when navigateHome()'s redirect
+    // doesn't actually leave the page within 2s. Unrelated to the
+    // temporary-network-loss reconnect flow above; right as-is.
+    // ---------------------------------------------------------------
+
+    private async handleConnectionFailed(isFallback: boolean = false) {
+        if (this.navigatingHome && !isFallback) return;
+
+        if (this.connectionRecoveryInProgress) {
+            return;
+        }
+
+        this.connectionRecoveryInProgress = true;
+
+        const timeout = isFallback ? 3000 : 15000;
+
+        this.recoveryTimeout = window.setTimeout(async () => {
+            this.connectionRecoveryInProgress = false;
+
+            await showMessage(
+                "Click Reconnect to continue.",
+                {
+                    title: "Connection Lost",
+                    confirmText: "Reconnect",
+                    variant: "error"
+                }
+            );
+
+            // User clicked Reconnect
+            window.location.reload();
+
+        }, timeout);
+
+        this.recoveryInterval = window.setInterval(() => {
+            if (this.lastConnectionStatus === "Ok") {
+                clearTimeout(this.recoveryTimeout!);
+                clearInterval(this.recoveryInterval!);
+                this.connectionRecoveryInProgress = false;
+            }
+        }, 1000);
+    }
+
     private focusInput() {
         if (this.stream?.getInput().getCurrentPredictedTouchAction() != "screenKeyboard" && !this.sidebar.getScreenKeyboard().isVisible()) {
             const inputElement = document.getElementById("input") as HTMLDivElement
@@ -472,7 +1040,7 @@ private async handleConnectionFailed(isFallback: boolean = false) {
         this.stream?.getVideoRenderer()?.onUserInteraction()
         this.stream?.getAudioPlayer()?.onUserInteraction()
     }
-    
+
     private onScreenKeyboardSetVisible(event: ScreenKeyboardSetVisibleEvent) {
         console.info(event.detail)
         const screenKeyboard = this.sidebar.getScreenKeyboard()
@@ -619,14 +1187,12 @@ private async handleConnectionFailed(isFallback: boolean = false) {
                 if (!this.isFullscreen()) {
                     try {
                         await body.requestFullscreen({ navigationUI: "hide" })
-                        // Wait for fullscreenchange event to fire
                         await new Promise(resolve => {
                             const handler = () => {
                                 document.removeEventListener("fullscreenchange", handler)
                                 resolve(undefined)
                             }
                             document.addEventListener("fullscreenchange", handler, { once: true })
-                            // Safety timeout in case event doesn't fire
                             setTimeout(() => {
                                 document.removeEventListener("fullscreenchange", handler)
                                 resolve(undefined)
@@ -659,7 +1225,6 @@ private async handleConnectionFailed(isFallback: boolean = false) {
                 console.warn("root element not found")
             }
         } finally {
-            // Give browser time to stabilize after all fullscreen operations
             setTimeout(() => { this.immersiveTransitionInProgress = false }, 2000)
         }
     }
@@ -750,11 +1315,10 @@ private async handleConnectionFailed(isFallback: boolean = false) {
         const isFullscreen = this.isFullscreen();
         const isPointerLocked = !!document.pointerLockElement;
 
-        // If the user is fully immersed (Fullscreen + Locked Mouse), hide everything
         if (isFullscreen && isPointerLocked) {
-            setSidebarVisible(false); // Uses the new function we created above
+            setSidebarVisible(false);
         } else {
-            setSidebarVisible(true);  // Bring it back if they ESC or unlock
+            setSidebarVisible(true);
             setSidebar(this.sidebar);
         }
     }
@@ -817,21 +1381,60 @@ class ConnectionInfoModal implements Modal<void> {
     }
 }
 
+class PermanentFailureModal implements Modal<boolean> {
+    private eventTarget = new EventTarget()
+    private root = document.createElement("div")
+
+    constructor() {
+        this.root.classList.add("modal-video-connect")
+
+        const text = document.createElement("p")
+        text.innerText = "Unable to reconnect."
+        this.root.appendChild(text)
+
+        const buttonRow = document.createElement("div")
+        buttonRow.style.cssText = "display:flex;gap:10px;margin-top:12px;"
+
+        const retryBtn = document.createElement("button")
+        retryBtn.innerText = "Retry"
+        retryBtn.onclick = () => this.eventTarget.dispatchEvent(new CustomEvent("ml-choice", { detail: true }))
+
+        const exitBtn = document.createElement("button")
+        exitBtn.innerText = "Exit Stream"
+        exitBtn.onclick = () => this.eventTarget.dispatchEvent(new CustomEvent("ml-choice", { detail: false }))
+
+        buttonRow.appendChild(retryBtn)
+        buttonRow.appendChild(exitBtn)
+        this.root.appendChild(buttonRow)
+    }
+
+    onFinish(abort: AbortSignal): Promise<boolean> {
+        return new Promise(resolve => {
+            this.eventTarget.addEventListener("ml-choice", (e) => {
+                resolve((e as CustomEvent<boolean>).detail)
+            }, { once: true, signal: abort })
+        })
+    }
+
+    mount(parent: HTMLElement): void {
+        parent.appendChild(this.root)
+    }
+    unmount(parent: HTMLElement): void {
+        parent.removeChild(this.root)
+    }
+}
 
 class ViewerSidebar implements Component, Sidebar {
     private app: ViewerApp;
     private div = document.createElement("div");
-    
-    // Restored the hidden screen keyboard instance
+
     private screenKeyboard = new ScreenKeyboard();
 
     constructor(app: ViewerApp) {
         this.app = app;
-        
-        // This is the main dropdown container
+
         this.div.classList.add("gamebar-container");
 
-        // 1. COMBINED FULLSCREEN & LOCK MOUSE BUTTON
         const btnFullscreen = document.createElement("button");
         btnFullscreen.className = "gamebar-btn";
         btnFullscreen.innerHTML = `
@@ -844,14 +1447,12 @@ class ViewerSidebar implements Component, Sidebar {
                 await this.app.exitFullscreen();
             } else {
                 await this.app.requestFullscreen();
-                // Slight delay to ensure fullscreen registers before pointer lock
                 setTimeout(async () => {
                     await this.app.requestPointerLock(true);
                 }, 150);
             }
         };
 
-        // 2. END STREAM BUTTON
         const btnEndStream = document.createElement("button");
         btnEndStream.className = "gamebar-btn btn-danger";
         btnEndStream.innerHTML = `
@@ -859,49 +1460,47 @@ class ViewerSidebar implements Component, Sidebar {
             <span>End Stream</span>
         `;
         btnEndStream.onclick = async () => {
-    const token = window.location.hostname.split(".")[0];
+            const token = window.location.hostname.split(".")[0];
 
-    btnEndStream.innerHTML = `<span>Ending...</span>`;
-    btnEndStream.disabled = true;
+            btnEndStream.innerHTML = `<span>Ending...</span>`;
+            btnEndStream.disabled = true;
 
-    try {
-        await fetch(
-            `https://backend.rigzer.com/api/sessions/cancel-by-token/${token}`,
-            {
-                method: "POST",
-                credentials: "include",
+            try {
+                await fetch(
+                    `https://backend.rigzer.com/api/sessions/cancel-by-token/${token}`,
+                    {
+                        method: "POST",
+                        credentials: "include",
+                    }
+                );
+
+                window.location.replace("https://rigzer.com");
+            } catch (e) {
+                console.error("Failed to end stream", e);
+
+                btnEndStream.innerHTML = `
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+                        <line x1="12" y1="2" x2="12" y2="12"></line>
+                    </svg>
+                    <span>End Stream</span>
+                `;
+                btnEndStream.disabled = false;
+
+                await showMessage(
+                    "Please try again.",
+                    {
+                        title: "Failed to End Stream",
+                        confirmText: "OK",
+                        variant: "error"
+                    }
+                );
             }
-        );
+        };
 
-        window.location.replace("https://rigzer.com");
-    } catch (e) {
-        console.error("Failed to end stream", e);
-
-        btnEndStream.innerHTML = `
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
-                <line x1="12" y1="2" x2="12" y2="12"></line>
-            </svg>
-            <span>End Stream</span>
-        `;
-        btnEndStream.disabled = false;
-
-        await showMessage(
-    "Please try again.",
-    {
-        title: "Failed to End Stream",
-        confirmText: "OK",
-        variant: "error"
-    }
-);
-    }
-};
-
-        // Append buttons to container
         this.div.appendChild(btnFullscreen);
         this.div.appendChild(btnEndStream);
 
-        // Restored: Keyboard event listeners so mobile typing doesn't break
         this.screenKeyboard.addKeyDownListener(this.onKeyDown.bind(this));
         this.screenKeyboard.addKeyUpListener(this.onKeyUp.bind(this));
         this.screenKeyboard.addTextListener(this.onText.bind(this));
@@ -919,23 +1518,23 @@ class ViewerSidebar implements Component, Sidebar {
     private onText(event: TextEvent) {
         this.app.getStream()?.getInput().sendText(event.detail.text);
     }
-    
+
     private onKeyDown(event: KeyboardEvent) {
         this.app.getStream()?.getInput().onKeyDown(event);
     }
-    
+
     private onKeyUp(event: KeyboardEvent) {
         this.app.getStream()?.getInput().onKeyUp(event);
     }
 
     extended(): void {}
     unextend(): void {}
-    
-    mount(parent: HTMLElement): void { 
-        parent.appendChild(this.div); 
+
+    mount(parent: HTMLElement): void {
+        parent.appendChild(this.div);
     }
-    unmount(parent: HTMLElement): void { 
-        parent.removeChild(this.div); 
+    unmount(parent: HTMLElement): void {
+        parent.removeChild(this.div);
     }
 }
 

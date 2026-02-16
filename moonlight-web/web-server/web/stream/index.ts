@@ -27,6 +27,7 @@ export type InfoEvent = CustomEvent<
     { type: "serverMessage", message: string } |
     { type: "connectionComplete", capabilities: StreamCapabilities } |
     { type: "connectionStatus", status: ConnectionStatus } |
+    { type: "transportState", state: "connected" | "failed" | "closed" } |
     { type: "addDebugLine", line: string, additional?: LogMessageInfo }
 >
 export type InfoEventListener = (event: InfoEvent) => void
@@ -106,6 +107,7 @@ export class Stream implements Component {
     private connectionCheckTimeout: number | null = null
 
     private gameExitListeners: Array<() => void> = []
+    private iceHealthy = false;
 
     constructor(api: Api, hostId: number, appId: number, settings: Settings, viewerScreenSize: [number, number]) {
         this.logger.addInfoListener((info, type) => {
@@ -335,6 +337,7 @@ export class Stream implements Component {
             const state = peerConnection.connectionState
             const previousState = this.connectionState
             this.connectionState = state
+            
 
             this.debugLog(`WebRTC connection: ${previousState} → ${state}`)
 
@@ -343,15 +346,12 @@ export class Stream implements Component {
                     this.debugLog('✅ WebRTC connected')
                     this.disconnectStartTime = null
                     this.clearConnectionCheckTimeout()
-                    
-                    // Dispatch Ok status - this will also cancel any background server check
-                    const connectedEvent: InfoEvent = new CustomEvent("stream-info", {
-                        detail: { 
-                            type: "connectionStatus", 
-                            status: "Ok" 
-                        }
+
+
+                    const transportConnectedEvent: InfoEvent = new CustomEvent("stream-info", {
+                        detail: { type: "transportState", state: "connected" }
                     })
-                    this.eventTarget.dispatchEvent(connectedEvent)
+                    this.eventTarget.dispatchEvent(transportConnectedEvent)
                     break
 
                 case 'connecting':
@@ -359,28 +359,45 @@ export class Stream implements Component {
                     this.debugLog('🔄 WebRTC connecting...')
                     break
 
-                case 'disconnected':
-                    this.debugLog('⚠️ WebRTC disconnected - waiting for auto-recovery')
-                    
-                    if (!this.disconnectStartTime) {
-                        this.disconnectStartTime = Date.now()
-                    }
-                    
-                    // Dispatch Poor status - triggers background server health check
-                    const disconnectedEvent: InfoEvent = new CustomEvent("stream-info", {
-                        detail: { 
-                            type: "connectionStatus", 
-                            status: "Poor" 
-                        }
-                    })
-                    this.eventTarget.dispatchEvent(disconnectedEvent)
-                    
-                    // Start monitoring - will only trigger fatalDescription after 15s
-                    // if still disconnected (not recovered)
-                    this.scheduleConnectionCheck()
-                    break
+                case "disconnected":
 
-               case 'failed':
+                    this.debugLog(
+                        "WebRTC disconnected - waiting..."
+                    );
+
+                    if (!this.disconnectStartTime)
+                        this.disconnectStartTime = Date.now();
+
+                    window.setTimeout(() => {
+
+                        if (
+                            this.connectionState !== "disconnected"
+                        ) {
+                            return;
+                        }
+
+                        const disconnectedEvent =
+                            new CustomEvent(
+                                "stream-info",
+                                {
+                                    detail:{
+                                        type:"connectionStatus",
+                                        status:"Poor"
+                                    }
+                                }
+                            );
+
+                        this.eventTarget.dispatchEvent(
+                            disconnectedEvent
+                        );
+
+                    },3000);
+
+                    this.scheduleConnectionCheck();
+
+                    break;
+
+                case 'failed':
                     this.debugLog('WebRTC failed - waiting for recovery')
 
                     if (!this.disconnectStartTime) {
@@ -389,29 +406,124 @@ export class Stream implements Component {
 
                     const failedEvent: InfoEvent =
                         new CustomEvent("stream-info", {
-                            detail: {
-                                type: "connectionStatus",
-                                status: "Poor"
-                            }
+                            detail: { type: "connectionStatus", status: "Poor" }
                         })
-
                     this.eventTarget.dispatchEvent(failedEvent)
+
+                    const transportFailedEvent: InfoEvent = new CustomEvent("stream-info", {
+                        detail: { type: "transportState", state: "failed" }
+                    })
+                    this.eventTarget.dispatchEvent(transportFailedEvent)
 
                     this.scheduleConnectionCheck()
                     break
                 case 'closed':
                     this.debugLog('🚪 WebRTC connection closed')
                     this.clearConnectionCheckTimeout()
+
+                    const transportClosedEvent: InfoEvent = new CustomEvent("stream-info", {
+                        detail: { type: "transportState", state: "closed" }
+                    })
+                    this.eventTarget.dispatchEvent(transportClosedEvent)
                     break
             }
         })
 
-        peerConnection.addEventListener('iceconnectionstatechange', () => {
-            this.debugLog(`ICE state: ${peerConnection.iceConnectionState}`)
-        })
+peerConnection.addEventListener(
+    "iceconnectionstatechange",
+    () => {
+
+        const state = peerConnection.iceConnectionState;
+
+        this.debugLog(`ICE state: ${state}`);
+        this.debugLog(
+    `connectionState=${peerConnection.connectionState}`
+);
+
+this.debugLog(
+    `signalingState=${peerConnection.signalingState}`
+);
+
+this.debugLog(
+    `iceGatheringState=${peerConnection.iceGatheringState}`
+);
+
+        switch(state){
+
+            case "checking":
+                    this.iceHealthy = false;
+                this.debugLog(
+                    "ICE repairing connection..."
+                );
+
+                break;
+
+            case "connected":
+
+            case "completed":
+    this.iceHealthy = true;
+                this.debugLog(
+                    "ICE recovered."
+                );
+
+                break;
+
+            case "failed":
+                    this.iceHealthy = false;
+                this.debugLog(
+                    "ICE failed."
+                );
+                void this.logConnectionStats(peerConnection);
+
+                break;
+            case "disconnected":
+
+                this.iceHealthy = false;
+
+                this.debugLog(
+                    "ICE disconnected."
+                );
+                void this.logConnectionStats(peerConnection);
+
+                break;
+        }
+
+    }
+);
     }
 
     
+    private async logConnectionStats(
+    peer: RTCPeerConnection
+) {
+
+    const stats = await peer.getStats();
+
+    stats.forEach(report => {
+
+        if (report.type === "candidate-pair") {
+
+            if ((report as any).state === "succeeded") {
+
+                this.debugLog(
+                    `[ICE] RTT=${(report as any).currentRoundTripTime}`
+                );
+
+                this.debugLog(
+                    `[ICE] Bytes Sent=${(report as any).bytesSent}`
+                );
+
+                this.debugLog(
+                    `[ICE] Bytes Received=${(report as any).bytesReceived}`
+                );
+
+            }
+
+        }
+
+    });
+
+}
 
     private scheduleConnectionCheck() {
         this.clearConnectionCheckTimeout()
@@ -641,7 +753,8 @@ export class Stream implements Component {
         const videoSettings: VideoPipelineOptions = {
             supportedVideoCodecs: andVideoCodecs(codecHint, transportCodecSupport),
             canvasRenderer: this.settings.canvasRenderer,
-            forceVideoElementRenderer: this.settings.forceVideoElementRenderer
+            forceVideoElementRenderer: this.settings.forceVideoElementRenderer,
+            canvasVsync: true,
         }
 
         let pipelineCodecSupport
@@ -781,6 +894,34 @@ export class Stream implements Component {
     unmount(parent: HTMLElement): void {
         parent.removeChild(this.divElement)
     }
+
+    destroy(): void {
+    this.clearConnectionCheckTimeout()
+
+    if (this.transport) {
+        this.transport.close()
+        this.transport = null
+    }
+
+    if (this.videoRenderer) {
+        this.videoRenderer.unmount(this.divElement)
+        this.videoRenderer.cleanup()
+        this.videoRenderer = null
+    }
+    if (this.audioPlayer) {
+        this.audioPlayer.unmount(this.divElement)
+        this.audioPlayer.cleanup()
+        this.audioPlayer = null
+    }
+    this.disconnectStartTime = null;
+this.connectionState = "closed";
+
+    try {
+        this.ws.close()
+    } catch {
+        // socket may already be closed
+    }
+}
 
     getVideoRenderer(): VideoRenderer | null {
         return this.videoRenderer

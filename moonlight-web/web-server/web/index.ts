@@ -370,13 +370,7 @@ async forceFetch() {
 }
 
 private startStreamForApp(hostId: number, appId: number) {
-    let query = new URLSearchParams({
-        hostId: hostId.toString(),
-        appId: appId.toString(),
-    })
-    
-    window.location.replace(buildUrl(`/stream.html?${query}`))
-
+    window.location.replace(buildUrl("/stream.html"))
 }
 
 
