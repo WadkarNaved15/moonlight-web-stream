@@ -40,21 +40,18 @@ async function startApp() {
         return;
     }
 
-    // Get Host and App via Query
     const queryParams = new URLSearchParams(location.search)
 
     const hostIdStr = queryParams.get("hostId")
     const appIdStr = queryParams.get("appId")
     if (hostIdStr == null || appIdStr == null) {
         await showMessage("No Host or no App Id found")
-
         window.close()
         return
     }
     const hostId = Number.parseInt(hostIdStr)
     const appId = Number.parseInt(appIdStr)
 
-    // event propagation on overlays
     const sidebarRoot = getSidebarRoot()
     if (sidebarRoot) {
         stopPropagationOn(sidebarRoot)
@@ -65,14 +62,11 @@ async function startApp() {
         stopPropagationOn(modalBackground)
     }
 
-    // Start and Mount App
     const app = new ViewerApp(api, hostId, appId)
     app.mount(rootElement)
 }
 
-// Prevent starting transition
 window.requestAnimationFrame(() => {
-    // Note: elements is a live array
     const elements = document.getElementsByClassName("prevent-start-transition")
     while (elements.length > 0) {
         elements.item(0)?.classList.remove("prevent-start-transition")
@@ -94,14 +88,12 @@ function getHomeOrigin(): string {
         return (window as any).__HOME_ORIGIN__.replace(/\/$/, "")
     }
 
-    // LAST fallback: referrer origin (if same-site)
     try {
         if (document.referrer) {
             return new URL(document.referrer).origin
         }
     } catch {}
 
-    // Absolute fallback (never breaks)
     return window.location.origin
 }
 
@@ -132,6 +124,12 @@ class ViewerApp implements Component {
         window.removeEventListener("beforeunload", this.beforeUnloadHandler)
     }
 
+    // -- Connection health tracking
+    private navigatingHome = false
+    private lastConnectionStatus: string = "Ok"
+    private serverAliveCache: boolean | null = null
+    private serverCheckPromise: Promise<boolean> | null = null
+
     constructor(api: Api, hostId: number, appId: number) {
         this.api = api
 
@@ -144,20 +142,16 @@ class ViewerApp implements Component {
 
         window.addEventListener("beforeunload", this.beforeUnloadHandler)
 
-        // Configure sidebar
         this.sidebar = new ViewerSidebar(this)
         setSidebar(this.sidebar)
 
-        // Configure stats element
         this.statsDiv.hidden = true
         this.statsDiv.classList.add("video-stats")
 
         setInterval(() => {
-            // Update stats display every 100ms
             const stats = this.getStream()?.getStats()
             if (stats && stats.isEnabled()) {
                 this.statsDiv.hidden = false
-
                 const text = streamStatsToText(stats.getCurrentStats())
                 this.statsDiv.innerText = text
             } else {
@@ -166,7 +160,6 @@ class ViewerApp implements Component {
         }, 100)
         this.div.appendChild(this.statsDiv)
 
-        // Configure stream
         const settings = getLocalStreamSettings() ?? defaultSettings()
 
         let browserWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0)
@@ -178,7 +171,6 @@ class ViewerApp implements Component {
 
         this.settings = settings
 
-        // Configure input
         this.addListeners(document)
         this.addListeners(document.getElementById("input") as HTMLDivElement)
 
@@ -196,7 +188,6 @@ class ViewerApp implements Component {
 
         window.addEventListener("gamepadconnected", this.onGamepadConnect.bind(this))
         window.addEventListener("gamepaddisconnected", this.onGamepadDisconnect.bind(this))
-        // Connect all gamepads
         for (const gamepad of navigator.getGamepads()) {
             if (gamepad != null) {
                 this.onGamepadAdd(gamepad)
@@ -204,36 +195,47 @@ class ViewerApp implements Component {
         }
     }
 
-    private async isWebServerAlive(): Promise<boolean> {
-    for (let i = 0; i < 2; i++) {
-        try {
-            const res = await fetch("/health", {
-                method: "GET",
-                cache: "no-store"
-            })
-            if (res.ok) return true
-        } catch {}
-
-        await new Promise(r => setTimeout(r, 800))
-    }
-
+private async isWebServerAlive(): Promise<boolean> {
+    // Two parallel requests with 800ms timeout
+    const attempts = [
+        fetch("/health", { method: "GET", cache: "no-store", signal: AbortSignal.timeout(800) }).catch(() => null),
+        fetch("/health", { method: "GET", cache: "no-store", signal: AbortSignal.timeout(800) }).catch(() => null)
+    ]
+    
+    try {
+        const res = await Promise.race(attempts)
+        if (res?.ok) return true
+    } catch {}
+    
     return false
 }
 
-    private checkingServer = false
+private startBackgroundServerCheck() {
+    if (this.serverCheckPromise || this.navigatingHome) return
+    console.info("🔍 Starting background server health check...")
 
-    
+    this.serverCheckPromise = this.isWebServerAlive().then(alive => {
+        this.serverAliveCache = alive
+        this.serverCheckPromise = null
+
+        if (!alive && !this.navigatingHome) {
+            console.error("❌ Background check: server dead - navigating home instantly")
+            this.navigateHome()
+        }
+        return alive
+    })
+}
+
     private navigateHome() {
-        // 🔓 allow navigation without browser prompt
+        if (this.navigatingHome) return
+        this.navigatingHome = true
+
         window.removeEventListener("beforeunload", this.beforeUnloadHandler)
-
         const home = getHomeOrigin()
-
-        // Hard reset navigation
+        console.info(`🏠 Navigating to home: ${home}`)
         window.location.replace(home)
     }
 
-    
     private addListeners(element: GlobalEventHandlers) {
         element.addEventListener("keydown", this.onKeyDown.bind(this), { passive: false })
         element.addEventListener("keyup", this.onKeyUp.bind(this), { passive: false })
@@ -257,10 +259,13 @@ class ViewerApp implements Component {
 
         this.stream = new Stream(this.api, hostId, appId, settings, browserSize)
 
-        // Add app info listener
         this.stream.addInfoListener(this.onInfo.bind(this))
 
-        // ✅ Setup immersive mode - NOW this.stream exists
+        this.stream.addGameExitListener(() => {
+            console.info("🎮 Game session ended on server - navigating home")
+            this.navigateHome()
+        })
+
         let immersiveAttempted = false
         let streamReady = false
 
@@ -268,47 +273,37 @@ class ViewerApp implements Component {
             if (immersiveAttempted || !streamReady) return
             immersiveAttempted = true
             
-            // ✅ Wait longer to ensure WebRTC is fully stable
             await new Promise(resolve => setTimeout(resolve, 1000))
 
             try {
                 if (!this.isFullscreen()) {
                     await this.requestFullscreen()
-                    // ✅ Wait for fullscreen to settle
                     await new Promise(resolve => setTimeout(resolve, 500))
                 }
                 await this.requestPointerLock()
             } catch (err) {
                 console.error("❌ Immersive mode failed:", err)
-                immersiveAttempted = false  // Allow retry on next interaction
+                immersiveAttempted = false
             }
         }
 
-        // ✅ Setup immersive trigger - this.stream exists here
         this.stream.addInfoListener((event) => {
             if (event.detail.type === "connectionComplete") {
                 streamReady = true
-                // ✅ Wait for next user interaction
                 const onFirstInteraction = () => {
                     attemptImmersive()
-                    
-                    // Remove listeners after first interaction
                     window.removeEventListener("pointerdown", onFirstInteraction)
                     window.removeEventListener("keydown", onFirstInteraction)
                 }
-                
-                // ✅ Normal listeners (no capture phase, no blocking)
                 window.addEventListener("pointerdown", onFirstInteraction)
                 window.addEventListener("keydown", onFirstInteraction)
             }
         })
 
-        // Create connection info modal
         const connectionInfo = new ConnectionInfoModal()
         this.stream.addInfoListener(connectionInfo.onInfo.bind(connectionInfo))
         showModal(connectionInfo)
 
-        // Start animation frame loop
         this.onTouchUpdate()
         this.onGamepadUpdate()
 
@@ -316,62 +311,98 @@ class ViewerApp implements Component {
 
         this.stream.mount(this.div)
     }
-private async onInfo(event: InfoEvent) {
-    const data = event.detail
 
-    if (data.type === "app") {
-        document.title = `Stream: ${data.app.title}`
-        return
-    }
+    private async onInfo(event: InfoEvent) {
+        const data = event.detail
 
-    if (data.type === "connectionComplete") {
-        this.sidebar.onCapabilitiesChange(data.capabilities)
-        requestAnimationFrame(() => hideSplash())
-        return
-    }
-
-    // ✅ Handle connection status changes
-    if (data.type === "connectionStatus") {
-        const status = data.status
-        console.info(`🔌 Connection status: ${status}`)
-        
-        // DO NOT call handleConnectionFailed here
-        // Let the Stream class handle the timeout logic
-        
-        return
-    }
-
-    // ✅ Only handle fatal messages with explicit timeout warning
-    if (data.type === "addDebugLine") {
-        console.info(`[Stream] ${data.line}`)
-        
-        // Only navigate home when we get the 15s timeout message
-        if (
-            data.additional?.type === "fatalDescription" 
-        ) {
-            this.handleConnectionFailed()
+        if (data.type === "app") {
+            document.title = `Stream: ${data.app.title}`
+            return
         }
-        
-        return
-    }
-}
 
-private async handleConnectionFailed() {
-    console.warn("🔌 Connection failed - checking server health...")
-    
-    // Give one last chance to check if it's a server issue or network issue
-    const alive = await this.isWebServerAlive()
-    
-    if (!alive) {
-        console.error("❌ Server unreachable - navigating home")
-        this.navigateHome()
-    } else {
-        console.warn("✅ Server alive - offering manual reconnect")
-        await showMessage("Connection lost. Click OK to reconnect.")
-        this.allowPageReload()
-        window.location.reload()
+        if (data.type === "connectionComplete") {
+            this.sidebar.onCapabilitiesChange(data.capabilities)
+            requestAnimationFrame(() => hideSplash())
+            return
+        }
+
+        if (data.type === "connectionStatus") {
+            console.info(`🔌 Connection status: ${data.status}`)
+            this.lastConnectionStatus = data.status
+
+            if (data.status === "Poor") {
+                this.startBackgroundServerCheck()
+            } else if (data.status === "Ok") {
+                // Connection recovered - cancel any pending background check result
+                this.serverAliveCache = null
+                this.serverCheckPromise = null
+            }
+            return
+        }
+
+        if (data.type === "addDebugLine") {
+            console.info(`[Stream] ${data.line}`)
+
+            // Handle WebRTC-level fatal errors (network failure, not game exit)
+            // ConnectionTerminated is handled by addGameExitListener, not here
+            if (data.additional?.type === "fatalDescription") {
+                this.handleConnectionFailed()
+            }
+
+            return
+        }
     }
-}
+
+    private async handleConnectionFailed() {
+        if (this.navigatingHome) return
+        console.warn("🔌 Connection failed - checking server health...")
+
+        let alive: boolean
+
+        if (this.serverAliveCache !== null) {
+            alive = this.serverAliveCache
+            console.info(`✅ Using cached server health: ${alive ? 'alive' : 'dead'}`)
+        } else if (this.serverCheckPromise) {
+            console.info("⏳ Waiting for in-flight check...")
+            alive = await this.serverCheckPromise
+        } else {
+            console.warn("⚠️ Running immediate check...")
+            alive = await this.isWebServerAlive()
+        }
+
+        if (!alive) {
+            console.error("❌ Server dead - navigating home NOW")
+            this.navigateHome()
+        } else {
+            console.info("✅ Server alive - waiting 15s for auto-recovery...")
+            
+            // Start 15s countdown for WebRTC to recover
+            const recoveryTimeout = setTimeout(() => {
+                if (this.navigatingHome) return
+                
+                // After 15s, offer manual reconnect
+                console.warn("⏰ 15s elapsed without recovery - offering reconnect")
+                showMessage("Connection lost. Click OK to reconnect. Hold esc to get cursor if in fullscreen").then(() => {
+                    this.allowPageReload()
+                    window.location.reload()
+                })
+            }, 15000)
+            
+            // If connection recovers before 15s, cancel the prompt
+            const checkRecovery = () => {
+                if (this.lastConnectionStatus === "Ok") {
+                    console.info("✅ Connection recovered - canceling reconnect prompt")
+                    clearTimeout(recoveryTimeout)
+                }
+            }
+            
+            // Check every second if connection recovered
+            const recoveryCheckInterval = setInterval(checkRecovery, 1000)
+            
+            // Clean up interval after 15s
+            setTimeout(() => clearInterval(recoveryCheckInterval), 15000)
+        }
+    }
 
     private focusInput() {
         if (this.stream?.getInput().getCurrentPredictedTouchAction() != "screenKeyboard" && !this.sidebar.getScreenKeyboard().isVisible()) {
@@ -401,30 +432,24 @@ private async handleConnectionFailed() {
         }
     }
 
-    // Input
     getInputConfig(): StreamInputConfig {
         return this.inputConfig
     }
     setInputConfig(config: StreamInputConfig) {
         Object.assign(this.inputConfig, config)
-
         this.stream?.getInput().setConfig(this.inputConfig)
     }
 
-    // Keyboard
     onKeyDown(event: KeyboardEvent) {
         this.onUserInteraction()
-
         event.preventDefault()
         this.stream?.getInput().onKeyDown(event)
-
         event.stopPropagation()
     }
 
     private isTogglingFullscreenWithKeybind: "waitForCtrl" | "makingFullscreen" | "none" = "none"
     onKeyUp(event: KeyboardEvent) {
         this.onUserInteraction()
-
         event.preventDefault()
         this.stream?.getInput().onKeyUp(event)
         event.stopPropagation()
@@ -443,85 +468,66 @@ private async handleConnectionFailed() {
                     await this.requestFullscreen()
                     await this.requestPointerLock()
                 }
-
                 this.isTogglingFullscreenWithKeybind = "none"
             })()
         }
     }
 
-    // Mouse
     onMouseButtonDown(event: MouseEvent) {
         this.onUserInteraction()
-
         event.preventDefault()
         this.stream?.getInput().onMouseDown(event, this.getStreamRect());
-
         event.stopPropagation()
     }
     onMouseButtonUp(event: MouseEvent) {
         this.onUserInteraction()
-
         event.preventDefault()
         this.stream?.getInput().onMouseUp(event)
-
         event.stopPropagation()
     }
     onMouseMove(event: MouseEvent) {
         event.preventDefault()
         this.stream?.getInput().onMouseMove(event, this.getStreamRect())
-
         event.stopPropagation()
     }
     onMouseWheel(event: WheelEvent) {
         event.preventDefault()
         this.stream?.getInput().onMouseWheel(event)
-
         event.stopPropagation()
     }
     onContextMenu(event: MouseEvent) {
         event.preventDefault()
-
         event.stopPropagation()
     }
 
-    // Touch
     onTouchStart(event: TouchEvent) {
         this.onUserInteraction()
-
         event.preventDefault()
         this.stream?.getInput().onTouchStart(event, this.getStreamRect())
-
         event.stopPropagation()
     }
     onTouchEnd(event: TouchEvent) {
         this.onUserInteraction()
-
         event.preventDefault()
         this.stream?.getInput().onTouchEnd(event, this.getStreamRect())
-
         event.stopPropagation()
     }
     onTouchCancel(event: TouchEvent) {
         this.onUserInteraction()
-
         event?.preventDefault()
         this.stream?.getInput().onTouchCancel(event, this.getStreamRect())
-
         event.stopPropagation()
     }
     onTouchUpdate() {
         this.stream?.getInput().onTouchUpdate(this.getStreamRect())
-
         window.requestAnimationFrame(this.onTouchUpdate.bind(this))
     }
     onTouchMove(event: TouchEvent) {
         event.preventDefault()
         this.stream?.getInput().onTouchMove(event, this.getStreamRect())
-
         event.stopPropagation()
     }
 
-    // Gamepad
     onGamepadConnect(event: GamepadEvent) {
         this.onGamepadAdd(event.gamepad)
     }
@@ -533,17 +539,14 @@ private async handleConnectionFailed() {
     }
     onGamepadUpdate() {
         this.stream?.getInput().onGamepadUpdate()
-
         window.requestAnimationFrame(this.onGamepadUpdate.bind(this))
     }
 
-    // Fullscreen
     async requestFullscreen() {
         const body = document.body
         if (body) {
             if (!("requestFullscreen" in body && typeof body.requestFullscreen == "function")) {
                 await showMessage("Fullscreen is not supported by your browser!")
-
                 return
             }
 
@@ -551,9 +554,7 @@ private async handleConnectionFailed() {
 
             if (!this.isFullscreen()) {
                 try {
-                    await body.requestFullscreen({
-                        navigationUI: "hide"
-                    })
+                    await body.requestFullscreen({ navigationUI: "hide" })
                 } catch (e) {
                     console.warn("failed to request fullscreen", e)
                 }
@@ -562,7 +563,6 @@ private async handleConnectionFailed() {
             if ("keyboard" in navigator && navigator.keyboard && "lock" in navigator.keyboard) {
                 try {
                     await navigator.keyboard.lock()
-
                     if (!this.hasShownFullscreenEscapeWarning) {
                         await showMessage("To exit Fullscreen you'll have to hold ESC for a few seconds.")
                     }
@@ -575,7 +575,6 @@ private async handleConnectionFailed() {
             try {
                 if (screen && "orientation" in screen) {
                     const orientation = screen.orientation
-
                     if ("lock" in orientation && typeof orientation.lock == "function") {
                         await orientation.lock("landscape")
                     }
@@ -591,7 +590,6 @@ private async handleConnectionFailed() {
         if ("keyboard" in navigator && navigator.keyboard && "unlock" in navigator.keyboard) {
             await navigator.keyboard.unlock()
         }
-
         if ("exitFullscreen" in document && typeof document.exitFullscreen == "function") {
             await document.exitFullscreen()
         }
@@ -603,7 +601,6 @@ private async handleConnectionFailed() {
         this.checkFullyImmersed()
     }
 
-    // Pointer Lock
     async requestPointerLock(errorIfNotFound: boolean = false) {
         this.previousMouseMode = this.inputConfig.mouseMode
 
@@ -619,26 +616,19 @@ private async handleConnectionFailed() {
 
             const onLockError = () => {
                 document.removeEventListener("pointerlockerror", onLockError)
-
-                // Fallback: try to request pointer lock without options
                 inputElement.requestPointerLock()
             }
 
             document.addEventListener("pointerlockerror", onLockError, { once: true })
 
             try {
-                let promise = inputElement.requestPointerLock({
-                    unadjustedMovement: true
-                })
-
+                let promise = inputElement.requestPointerLock({ unadjustedMovement: true })
                 if (promise) {
                     await promise
                 } else {
                     inputElement.requestPointerLock()
                 }
             } catch (error) {
-                // Some platforms do not support unadjusted movement. If you
-                // would like PointerLock anyway, request again.
                 if (error instanceof Error && error.name == "NotSupportedError") {
                     inputElement.requestPointerLock()
                 } else {
@@ -666,11 +656,9 @@ private async handleConnectionFailed() {
         }
     }
 
-    // -- Fully immersed Fullscreen -> Fullscreen API + Pointer Lock
     private checkFullyImmersed() {
         if ("pointerLockElement" in document && document.pointerLockElement &&
             "fullscreenElement" in document && document.fullscreenElement) {
-            // We're fully immersed -> remove sidebar
             setSidebar(null)
         } else {
             setSidebar(this.sidebar)
@@ -685,8 +673,6 @@ private async handleConnectionFailed() {
     }
 
     getStreamRect(): DOMRect {
-        // The bounding rect of the videoElement or canvasElement can be bigger than the actual video
-        // -> We need to correct for this when sending positions, else positions are wrong
         return this.stream?.getVideoRenderer()?.getStreamRect() ?? new DOMRect()
     }
     getStream(): Stream | null {
@@ -708,7 +694,6 @@ class ConnectionInfoModal implements Modal<void> {
     onInfo(event: InfoEvent) {
         const data = event.detail
 
-        // ✅ Connection established
         if (data.type === "connectionComplete") {
             this.text.innerText = "Connected! Click to start..."
             this.eventTarget.dispatchEvent(new Event("ml-connected"))
@@ -716,9 +701,7 @@ class ConnectionInfoModal implements Modal<void> {
         }
 
         if (data.type === "addDebugLine") {
-            // Keep logs for developers only
             console.info(`[Stream] ${data.line}`)
-
             return
         }
     }
@@ -745,19 +728,14 @@ class ViewerSidebar implements Component, Sidebar {
     private app: ViewerApp
 
     private div = document.createElement("div")
-
     private buttonDiv = document.createElement("div")
 
     private sendKeycodeButton = document.createElement("button")
-
     private keyboardButton = document.createElement("button")
     private screenKeyboard = new ScreenKeyboard()
-
     private lockMouseButton = document.createElement("button")
     private fullscreenButton = document.createElement("button")
-
     private statsButton = document.createElement("button")
-
     private reconnectButton = document.createElement("button")
 
     private mouseMode: SelectComponent
@@ -766,34 +744,25 @@ class ViewerSidebar implements Component, Sidebar {
     constructor(app: ViewerApp) {
         this.app = app
 
-        // Configure divs
         this.div.classList.add("sidebar-stream")
-
         this.buttonDiv.classList.add("sidebar-stream-buttons")
         this.div.appendChild(this.buttonDiv)
 
-        // Send keycode
         this.sendKeycodeButton.innerText = "Send Keycode"
         this.sendKeycodeButton.addEventListener("click", async () => {
             const key = await showModal(new SendKeycodeModal())
-
-            if (key == null) {
-                return
-            }
-
+            if (key == null) return
             this.app.getStream()?.getInput().sendKey(true, key, 0)
             this.app.getStream()?.getInput().sendKey(false, key, 0)
         })
         this.buttonDiv.appendChild(this.sendKeycodeButton)
 
-        // Pointer Lock
         this.lockMouseButton.innerText = "Lock Mouse"
         this.lockMouseButton.addEventListener("click", async () => {
             await this.app.requestPointerLock(true)
         })
         this.buttonDiv.appendChild(this.lockMouseButton)
 
-        // Pop up keyboard
         this.keyboardButton.innerText = "Keyboard"
         this.keyboardButton.addEventListener("click", async () => {
             setSidebarExtended(false)
@@ -806,8 +775,6 @@ class ViewerSidebar implements Component, Sidebar {
         this.screenKeyboard.addTextListener(this.onText.bind(this))
         this.div.appendChild(this.screenKeyboard.getHiddenElement())
 
-
-        // Fullscreen
         this.fullscreenButton.innerText = "Fullscreen"
         this.fullscreenButton.addEventListener("click", async () => {
             if (this.app.isFullscreen()) {
@@ -818,7 +785,6 @@ class ViewerSidebar implements Component, Sidebar {
         })
         this.buttonDiv.appendChild(this.fullscreenButton)
 
-        // Stats
         this.statsButton.innerText = "Stats"
         this.statsButton.addEventListener("click", () => {
             const stats = this.app.getStream()?.getStats()
@@ -828,20 +794,14 @@ class ViewerSidebar implements Component, Sidebar {
         })
         this.buttonDiv.appendChild(this.statsButton)
 
-        // Reconnect Stream
         this.reconnectButton.innerText = "Reconnect Stream"
         this.reconnectButton.addEventListener("click", async () => {
             await showMessage("Reconnecting… This may take 5–10 seconds.")
-
             this.app.allowPageReload()
-
             window.location.reload()
         })
-
         this.buttonDiv.appendChild(this.reconnectButton)
 
-
-        // Select Mouse Mode
         this.mouseMode = new SelectComponent("mouseMode", [
             { value: "relative", name: "Relative" },
             { value: "follow", name: "Follow" },
@@ -853,7 +813,6 @@ class ViewerSidebar implements Component, Sidebar {
         this.mouseMode.addChangeListener(this.onMouseModeChange.bind(this))
         this.mouseMode.mount(this.div)
 
-        // Select Touch Mode
         this.touchMode = new SelectComponent("touchMode", [
             { value: "touch", name: "Touch" },
             { value: "mouseRelative", name: "Relative" },
@@ -874,7 +833,6 @@ class ViewerSidebar implements Component, Sidebar {
         return this.screenKeyboard
     }
 
-    // -- Keyboard
     private onText(event: TextEvent) {
         this.app.getStream()?.getInput().sendText(event.detail.text)
     }
@@ -885,26 +843,20 @@ class ViewerSidebar implements Component, Sidebar {
         this.app.getStream()?.getInput().onKeyUp(event)
     }
 
-    // -- Mouse Mode
     private onMouseModeChange() {
         const config = this.app.getInputConfig()
         config.mouseMode = this.mouseMode.getValue() as any
         this.app.setInputConfig(config)
     }
 
-    // -- Touch Mode
     private onTouchModeChange() {
         const config = this.app.getInputConfig()
         config.touchMode = this.touchMode.getValue() as any
         this.app.setInputConfig(config)
     }
 
-    extended(): void {
-
-    }
-    unextend(): void {
-
-    }
+    extended(): void {}
+    unextend(): void {}
 
     mount(parent: HTMLElement): void {
         parent.appendChild(this.div)
@@ -915,7 +867,6 @@ class ViewerSidebar implements Component, Sidebar {
 }
 
 class SendKeycodeModal extends FormModal<number> {
-
     private dropdownSearch: SelectComponent
 
     constructor() {
@@ -927,16 +878,12 @@ class SendKeycodeModal extends FormModal<number> {
             const keyValue = StreamKeys[keyName]
 
             const PREFIX = "VK_"
-
             let name: string = keyName
             if (name.startsWith(PREFIX)) {
                 name = name.slice(PREFIX.length)
             }
 
-            keyList.push({
-                value: keyValue.toString(),
-                name
-            })
+            keyList.push({ value: keyValue.toString(), name })
         }
 
         this.dropdownSearch = new SelectComponent("winKeycode", keyList, {
@@ -949,22 +896,17 @@ class SendKeycodeModal extends FormModal<number> {
         this.dropdownSearch.mount(form)
     }
 
-
     reset(): void {
         this.dropdownSearch.reset()
     }
 
     submit(): number | null {
         const keyString = this.dropdownSearch.getValue()
-        if (keyString == null) {
-            return null
-        }
-
+        if (keyString == null) return null
         return parseInt(keyString)
     }
 }
 
-// Stop propagation so the stream doesn't get it
 function stopPropagationOn(element: HTMLElement) {
     element.addEventListener("keydown", onStopPropagation)
     element.addEventListener("keyup", onStopPropagation)

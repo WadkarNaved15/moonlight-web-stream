@@ -105,7 +105,7 @@ export class Stream implements Component {
     private disconnectStartTime: number | null = null
     private connectionCheckTimeout: number | null = null
 
-    
+    private gameExitListeners: Array<() => void> = []
 
     constructor(api: Api, hostId: number, appId: number, settings: Settings, viewerScreenSize: [number, number]) {
         this.logger.addInfoListener((info, type) => {
@@ -123,7 +123,6 @@ export class Stream implements Component {
 
         // Configure web socket
         const wsApiHost = api.host_url.replace(/^http(s)?:/, "ws$1:")
-        // TODO: firstly try out WebTransport
         this.ws = new WebSocket(`${wsApiHost}/host/stream`)
         this.ws.addEventListener("error", this.onError.bind(this))
         this.ws.addEventListener("open", this.onWsOpen.bind(this))
@@ -160,8 +159,6 @@ export class Stream implements Component {
             this.eventTarget.dispatchEvent(event)
         }
     }
-
-    
 
     private async onMessage(message: StreamServerMessage) {
         if ("DebugLog" in message) {
@@ -205,14 +202,11 @@ export class Stream implements Component {
             this.input.onStreamStart(capabilities, [width, height])
 
             this.stats.setVideoInfo(format ?? "Unknown", width, height, fps)
-            // HDR state will be set when server sends HdrModeUpdate message
-            // Don't initialize from settings.hdr because that's just the user's preference,
-            // not the actual HDR state (which depends on host support, display, and codec)
+
             if (this.settings.hdr) {
                 this.debugLog("HDR requested by user, waiting for host confirmation...")
             }
 
-            // we should allow streaming without audio
             if (!this.audioPlayer) {
                 showErrorPopup("Failed to find supported audio player -> audio is missing.")
             }
@@ -235,10 +229,12 @@ export class Stream implements Component {
             ])
         } else if ("ConnectionTerminated" in message) {
             const code = message.ConnectionTerminated.error_code
-
-            this.debugLog(`ConnectionTerminated with code ${code}`, { type: "fatalDescription" })
+            this.debugLog(`ConnectionTerminated with code ${code}`)
+            
+            for (const listener of this.gameExitListeners) {
+                listener()
+            }
         }
-        // -- WebRTC Config
         else if ("Setup" in message) {
             const iceServers = message.Setup.ice_servers
 
@@ -250,7 +246,6 @@ export class Stream implements Component {
 
             await this.startConnection()
         }
-        // -- WebRTC
         else if ("WebRtc" in message) {
             const webrtcMessage = message.WebRtc
             if (this.transport instanceof WebRTCTransport) {
@@ -308,7 +303,6 @@ export class Stream implements Component {
             this.debugLog("Failed to get rtt as data transport channel. Cannot respond to rtt packets")
         }
 
-        // Setup GENERAL channel listener for HDR mode updates
         const generalChannel = this.transport.getChannel(TransportChannelId.GENERAL)
         this.debugLog(`[GENERAL] Setting up GENERAL channel listener, type=${generalChannel.type}`)
         if (generalChannel.type === "data") {
@@ -321,121 +315,114 @@ export class Stream implements Component {
         }
     }
 
-// Add this method to your Stream class
-private setupConnectionMonitoring(transport: WebRTCTransport) {
-    const peerConnection = transport.getPeerConnection()
-    
-    if (!peerConnection) {
-        this.debugLog("No peer connection available for monitoring")
-        return
-    }
-
-    peerConnection.addEventListener('connectionstatechange', () => {
-        const state = peerConnection.connectionState
-        const previousState = this.connectionState
-        this.connectionState = state
-
-        this.debugLog(`WebRTC connection: ${previousState} → ${state}`)
-
-        switch (state) {
-            case 'connected':
-                this.debugLog('✅ WebRTC connected')
-                this.disconnectStartTime = null
-                this.clearConnectionCheckTimeout()
-                
-                // Dispatch OK status
-                const connectedEvent: InfoEvent = new CustomEvent("stream-info", {
-                    detail: { 
-                        type: "connectionStatus", 
-                        status: "Ok" 
-                    }
-                })
-                this.eventTarget.dispatchEvent(connectedEvent)
-                break
-
-            case 'connecting':
-                this.debugLog('🔄 WebRTC connecting...')
-                break
-
-            case 'disconnected':
-                this.debugLog('⚠️ WebRTC disconnected - waiting for auto-recovery')
-                
-                if (!this.disconnectStartTime) {
-                    this.disconnectStartTime = Date.now()
-                }
-                
-                // Dispatch Poor status (but DON'T treat as fatal yet)
-                const disconnectedEvent: InfoEvent = new CustomEvent("stream-info", {
-                    detail: { 
-                        type: "connectionStatus", 
-                        status: "Poor" 
-                    }
-                })
-                this.eventTarget.dispatchEvent(disconnectedEvent)
-                
-                // Start monitoring - will only trigger fatal after 15s
-                this.scheduleConnectionCheck()
-                break
-
-            case 'failed':
-                // WebRTC has given up completely
-                this.debugLog('❌ WebRTC connection failed permanently', { type: "fatalDescription" })
-                this.clearConnectionCheckTimeout()
-                
-                // Dispatch Poor status
-                const failedEvent: InfoEvent = new CustomEvent("stream-info", {
-                    detail: { 
-                        type: "connectionStatus", 
-                        status: "Poor" 
-                    }
-                })
-                this.eventTarget.dispatchEvent(failedEvent)
-                
-                // Trigger immediate failure handling since WebRTC gave up
-                this.debugLog('Connection lost - WebRTC failed', { type: "fatalDescription" })
-                break
-
-            case 'closed':
-                this.debugLog('🚪 WebRTC connection closed')
-                this.clearConnectionCheckTimeout()
-                break
+    private setupConnectionMonitoring(transport: WebRTCTransport) {
+        const peerConnection = transport.getPeerConnection()
+        
+        if (!peerConnection) {
+            this.debugLog("No peer connection available for monitoring")
+            return
         }
-    })
 
-    // Monitor ICE connection state for additional diagnostics
-    peerConnection.addEventListener('iceconnectionstatechange', () => {
-        this.debugLog(`ICE state: ${peerConnection.iceConnectionState}`)
-    })
-}
+        peerConnection.addEventListener('connectionstatechange', () => {
+            const state = peerConnection.connectionState
+            const previousState = this.connectionState
+            this.connectionState = state
 
-private scheduleConnectionCheck() {
-    // Clear any existing timeout
-    this.clearConnectionCheckTimeout()
+            this.debugLog(`WebRTC connection: ${previousState} → ${state}`)
 
-    // Check again in 5 seconds if still disconnected
-    this.connectionCheckTimeout = window.setTimeout(() => {
-        if (this.connectionState === 'disconnected') {
-            const duration = Date.now() - (this.disconnectStartTime || 0)
-            this.debugLog(`Still disconnected after ${Math.round(duration / 1000)}s`)
-            
-            // If disconnected > 15 seconds, it's likely permanent
-            if (duration > 15000) {
-                this.debugLog('Connection lost for >15s - likely permanent', { type: "fatalDescription" })
-                // This will trigger handleConnectionFailed in stream.js
-            } else {
-                // Schedule another check
-                this.scheduleConnectionCheck()
+            switch (state) {
+                case 'connected':
+                    this.debugLog('✅ WebRTC connected')
+                    this.disconnectStartTime = null
+                    this.clearConnectionCheckTimeout()
+                    
+                    // Dispatch Ok status - this will also cancel any background server check
+                    const connectedEvent: InfoEvent = new CustomEvent("stream-info", {
+                        detail: { 
+                            type: "connectionStatus", 
+                            status: "Ok" 
+                        }
+                    })
+                    this.eventTarget.dispatchEvent(connectedEvent)
+                    break
+
+                case 'connecting':
+                    this.debugLog('🔄 WebRTC connecting...')
+                    break
+
+                case 'disconnected':
+                    this.debugLog('⚠️ WebRTC disconnected - waiting for auto-recovery')
+                    
+                    if (!this.disconnectStartTime) {
+                        this.disconnectStartTime = Date.now()
+                    }
+                    
+                    // Dispatch Poor status - triggers background server health check
+                    const disconnectedEvent: InfoEvent = new CustomEvent("stream-info", {
+                        detail: { 
+                            type: "connectionStatus", 
+                            status: "Poor" 
+                        }
+                    })
+                    this.eventTarget.dispatchEvent(disconnectedEvent)
+                    
+                    // Start monitoring - will only trigger fatalDescription after 15s
+                    // if still disconnected (not recovered)
+                    this.scheduleConnectionCheck()
+                    break
+
+               case 'failed':
+                    this.debugLog('❌ WebRTC connection failed permanently')
+                    this.clearConnectionCheckTimeout()
+                    
+                    const failedEvent: InfoEvent = new CustomEvent("stream-info", {
+                        detail: { type: "connectionStatus", status: "Poor" }
+                    })
+                    this.eventTarget.dispatchEvent(failedEvent)
+                    
+                    // Fire immediately - no delay
+                    this.debugLog('Connection lost - WebRTC failed', { type: "fatalDescription" })
+                    break
+                case 'closed':
+                    this.debugLog('🚪 WebRTC connection closed')
+                    this.clearConnectionCheckTimeout()
+                    break
             }
-        }
-    }, 5000)
-}
+        })
 
-private clearConnectionCheckTimeout() {
-    if (this.connectionCheckTimeout) {
-        clearTimeout(this.connectionCheckTimeout)
-        this.connectionCheckTimeout = null
+        peerConnection.addEventListener('iceconnectionstatechange', () => {
+            this.debugLog(`ICE state: ${peerConnection.iceConnectionState}`)
+        })
     }
-}
+
+    
+
+    private scheduleConnectionCheck() {
+        this.clearConnectionCheckTimeout()
+
+        this.connectionCheckTimeout = window.setTimeout(() => {
+            // Only fire fatalDescription if STILL disconnected (not recovered)
+            if (this.connectionState === 'disconnected') {
+                const duration = Date.now() - (this.disconnectStartTime || 0)
+                this.debugLog(`Still disconnected after ${Math.round(duration / 1000)}s`)
+                
+                if (duration > 15000) {
+                    // Connection did not recover in 15s - treat as permanent failure
+                    this.debugLog('Connection lost for >15s - likely permanent', { type: "fatalDescription" })
+                } else {
+                    this.scheduleConnectionCheck()
+                }
+            }
+            // If state is 'connected', 'failed', 'closed' etc - do nothing, already handled
+        }, 5000)
+    }
+
+    private clearConnectionCheckTimeout() {
+        if (this.connectionCheckTimeout) {
+            clearTimeout(this.connectionCheckTimeout)
+            this.connectionCheckTimeout = null
+        }
+    }
 
     private onGeneralChannelMessage(data: ArrayBuffer) {
         this.debugLog(`[GENERAL] Received message on GENERAL channel, size=${data.byteLength}`)
@@ -491,7 +478,7 @@ private clearConnectionCheckTimeout() {
     }
 
     private async tryWebRTCTransport(): Promise<TransportShutdown> {
-         this.debugLog("Trying WebRTC transport")
+        this.debugLog("Trying WebRTC transport")
 
         this.sendWsMessage({
             SetTransport: "WebRTC"
@@ -510,10 +497,8 @@ private clearConnectionCheckTimeout() {
         })
         this.setTransport(transport)
 
-        // ✅ Setup connection monitoring AFTER transport is set
         this.setupConnectionMonitoring(transport)
 
-        // Wait for negotiation
         const result = await (new Promise((resolve, _reject) => {
             transport.onconnect = () => resolve(true)
             transport.onclose = () => resolve(false)
@@ -524,7 +509,6 @@ private clearConnectionCheckTimeout() {
             return "failednoconnect"
         }
 
-        // Print pipe support
         const pipesInfo = await gatherPipeInfo()
 
         this.logger.debug(`Supported Pipes: {`)
@@ -551,6 +535,7 @@ private clearConnectionCheckTimeout() {
             }
         })
     }
+
     private async tryWebSocketTransport() {
         this.debugLog("Trying Web Socket transport")
 
@@ -578,7 +563,6 @@ private clearConnectionCheckTimeout() {
     }
 
     private async createPipelines(): Promise<VideoCodecSupport | null> {
-        // Print supported pipes
         const pipesInfo = await gatherPipeInfo()
 
         this.logger.debug(`Supported Pipes: {`)
@@ -589,7 +573,6 @@ private clearConnectionCheckTimeout() {
         }
         this.logger.debug(`}`)
 
-        // Create pipelines
         const [supportedVideoCodecs] = await Promise.all([this.createVideoRenderer(), this.createAudioPlayer()])
 
         const videoPipeline = `${this.transport?.getChannel(TransportChannelId.HOST_VIDEO).type} (transport) -> ${this.videoRenderer?.implementationName} (renderer)`
@@ -603,6 +586,7 @@ private clearConnectionCheckTimeout() {
 
         return supportedVideoCodecs
     }
+
     private async createVideoRenderer(): Promise<VideoCodecSupport | null> {
         if (this.videoRenderer) {
             this.debugLog("Found an old video renderer -> cleaning it up")
@@ -665,14 +649,10 @@ private clearConnectionCheckTimeout() {
             video.addReceiveListener((data) => {
                 videoRenderer.submitPacket(data)
 
-                // data pipeline support requesting idrs over video channel
                 if (videoRenderer.pollRequestIdr()) {
                     const buffer = new ByteBuffer(1)
-
                     buffer.putU8(0)
-
                     buffer.flip()
-
                     video.send(buffer.getRemainingBuffer().buffer)
                 }
             })
@@ -685,6 +665,7 @@ private clearConnectionCheckTimeout() {
 
         return pipelineCodecSupport
     }
+
     private async createAudioPlayer(): Promise<boolean> {
         if (this.audioPlayer) {
             this.debugLog("Found an old audio player -> cleaning it up")
@@ -711,9 +692,7 @@ private clearConnectionCheckTimeout() {
             }
 
             audioPlayer.mount(this.divElement)
-
             audio.addTrackListener((track) => audioPlayer.setTrack(track))
-
             this.audioPlayer = audioPlayer
         } else if (audio.type == "data") {
             const { audioPlayer, error } = await buildAudioPipeline("data", this.settings, this.logger)
@@ -726,7 +705,6 @@ private clearConnectionCheckTimeout() {
 
             audio.addReceiveListener((data) => {
                 audioPlayer.decodeAndPlay({
-                    // TODO: fill in duration and timestamp
                     durationMicroseconds: 0,
                     timestampMicroseconds: 0,
                     data
@@ -741,6 +719,7 @@ private clearConnectionCheckTimeout() {
 
         return true
     }
+
     private async startStream(videoCodecSupport: VideoCodecSupport): Promise<void> {
         const message: StreamClientMessage = {
             StartStream: {
@@ -759,7 +738,6 @@ private clearConnectionCheckTimeout() {
         this.debugLog(`Starting stream with info: ${JSON.stringify(message)}`)
         this.debugLog(`Stream video codec info: ${JSON.stringify(videoCodecSupport)}`)
 
-        // Log HDR requirements if HDR is requested
         if (this.settings.hdr) {
             const hasHdrCodec = videoCodecSupport.H265_MAIN10 || videoCodecSupport.AV1_MAIN10
             if (!hasHdrCodec) {
@@ -786,7 +764,6 @@ private clearConnectionCheckTimeout() {
         return this.audioPlayer
     }
 
-    // -- Raw Web Socket stuff
     private wsSendBuffer: Array<string> = []
 
     private onWsOpen() {
@@ -801,7 +778,6 @@ private clearConnectionCheckTimeout() {
     }
     private onError(event: Event) {
         this.debugLog(`Web Socket or WebRtcPeer Error`)
-
         console.error(`Web Socket or WebRtcPeer Error`, event)
     }
 
@@ -817,17 +793,26 @@ private clearConnectionCheckTimeout() {
         const message = event.data
         if (typeof message == "string") {
             const json = JSON.parse(message)
-
             this.onMessage(json)
         }
     }
 
-    // -- Class Api
     addInfoListener(listener: InfoEventListener) {
         this.eventTarget.addEventListener("stream-info", listener as EventListenerOrEventListenerObject)
     }
     removeInfoListener(listener: InfoEventListener) {
         this.eventTarget.removeEventListener("stream-info", listener as EventListenerOrEventListenerObject)
+    }
+
+    addGameExitListener(listener: () => void) {
+        this.gameExitListeners.push(listener)
+    }
+
+    removeGameExitListener(listener: () => void) {
+        const index = this.gameExitListeners.indexOf(listener)
+        if (index !== -1) {
+            this.gameExitListeners.splice(index, 1)
+        }
     }
 
     getInput(): StreamInput {
@@ -850,10 +835,8 @@ function createPrettyList(list: Array<string>): string {
             text += ", "
         }
         isFirst = false
-
         text += item
     }
     text += "]"
-
     return text
 }
