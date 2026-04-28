@@ -16,6 +16,33 @@ import { streamStatsToText } from "./stream/stats.js";
 // Lock UI immediately
 document.body.classList.add("loading")
 
+function getStreamToken() {
+    const host = window.location.hostname
+    return host.split(".")[0]
+}
+
+function startHeartbeat() {
+    const token = getStreamToken()
+
+    if (!token) {
+        console.warn("No stream token found")
+        return
+    }
+
+    console.info("Starting heartbeat for token", token)
+
+    setInterval(async () => {
+        try {
+            await fetch(`https://backend.rigzer.com/api/sessions/heartbeat-by-token/${token}`, {
+                method: "POST",
+                credentials: "include"
+            })
+        } catch (err) {
+            console.warn("Heartbeat failed", err)
+        }
+    }, 20000)
+}
+
 let splashHidden = false
 
 function hideSplash() {
@@ -75,6 +102,7 @@ window.requestAnimationFrame(() => {
 
 startApp()
 
+
 function getHomeOrigin(): string {
     const meta = document.querySelector<HTMLMetaElement>(
         'meta[name="home-origin"]'
@@ -114,6 +142,8 @@ class ViewerApp implements Component {
     private previousMouseMode: MouseMode
     private toggleFullscreenWithKeybind: boolean
     private hasShownFullscreenEscapeWarning = false
+    
+    private immersiveTransitionInProgress = false
 
     private beforeUnloadHandler = (e: BeforeUnloadEvent) => {
         e.preventDefault()
@@ -157,7 +187,7 @@ class ViewerApp implements Component {
             } else {
                 this.statsDiv.hidden = true
             }
-        }, 100)
+        }, 1000)
         this.div.appendChild(this.statsDiv)
 
         const settings = getLocalStreamSettings() ?? defaultSettings()
@@ -175,13 +205,15 @@ class ViewerApp implements Component {
         this.addListeners(document.getElementById("input") as HTMLDivElement)
 
         window.addEventListener("blur", () => {
+        if (!this.immersiveTransitionInProgress) {
             this.stream?.getInput().raiseAllKeys()
-        })
-        document.addEventListener("visibilitychange", () => {
-            if (document.visibilityState !== "visible") {
-                this.stream?.getInput().raiseAllKeys()
-            }
-        })
+        }
+    })
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "visible" && !this.immersiveTransitionInProgress) {
+            this.stream?.getInput().raiseAllKeys()
+        }
+    })
 
         document.addEventListener("pointerlockchange", this.onPointerLockChange.bind(this))
         document.addEventListener("fullscreenchange", this.onFullscreenChange.bind(this))
@@ -195,36 +227,6 @@ class ViewerApp implements Component {
         }
     }
 
-private async isWebServerAlive(): Promise<boolean> {
-    // Two parallel requests with 800ms timeout
-    const attempts = [
-        fetch("/health", { method: "GET", cache: "no-store", signal: AbortSignal.timeout(800) }).catch(() => null),
-        fetch("/health", { method: "GET", cache: "no-store", signal: AbortSignal.timeout(800) }).catch(() => null)
-    ]
-    
-    try {
-        const res = await Promise.race(attempts)
-        if (res?.ok) return true
-    } catch {}
-    
-    return false
-}
-
-private startBackgroundServerCheck() {
-    if (this.serverCheckPromise || this.navigatingHome) return
-    console.info("🔍 Starting background server health check...")
-
-    this.serverCheckPromise = this.isWebServerAlive().then(alive => {
-        this.serverAliveCache = alive
-        this.serverCheckPromise = null
-
-        if (!alive && !this.navigatingHome) {
-            console.error("❌ Background check: server dead - navigating home instantly")
-            this.navigateHome()
-        }
-        return alive
-    })
-}
 
     private navigateHome() {
         if (this.navigatingHome) return
@@ -273,14 +275,20 @@ private startBackgroundServerCheck() {
             if (immersiveAttempted || !streamReady) return
             immersiveAttempted = true
             
-            await new Promise(resolve => setTimeout(resolve, 1000))
+            await new Promise(resolve => setTimeout(resolve, 2500))
+
+            // Guard: don't attempt if already navigating away
+            if (this.navigatingHome) return
 
             try {
                 if (!this.isFullscreen()) {
                     await this.requestFullscreen()
-                    await new Promise(resolve => setTimeout(resolve, 500))
+                    await new Promise(resolve => setTimeout(resolve, 800))
                 }
+            // Only lock pointer if connection is still healthy
+            if (!this.navigatingHome) {
                 await this.requestPointerLock()
+            }
             } catch (err) {
                 console.error("❌ Immersive mode failed:", err)
                 immersiveAttempted = false
@@ -322,6 +330,7 @@ private startBackgroundServerCheck() {
 
         if (data.type === "connectionComplete") {
             this.sidebar.onCapabilitiesChange(data.capabilities)
+            startHeartbeat()  
             requestAnimationFrame(() => hideSplash())
             return
         }
@@ -329,14 +338,6 @@ private startBackgroundServerCheck() {
         if (data.type === "connectionStatus") {
             console.info(`🔌 Connection status: ${data.status}`)
             this.lastConnectionStatus = data.status
-
-            if (data.status === "Poor") {
-                this.startBackgroundServerCheck()
-            } else if (data.status === "Ok") {
-                // Connection recovered - cancel any pending background check result
-                this.serverAliveCache = null
-                this.serverCheckPromise = null
-            }
             return
         }
 
@@ -353,56 +354,33 @@ private startBackgroundServerCheck() {
         }
     }
 
-    private async handleConnectionFailed() {
+private async handleConnectionFailed() {
+    if (this.navigatingHome) return
+
+    console.warn("🔌 Connection lost - waiting for recovery...")
+
+    const recoveryTimeout = setTimeout(() => {
         if (this.navigatingHome) return
-        console.warn("🔌 Connection failed - checking server health...")
 
-        let alive: boolean
+        console.warn("⏰ Connection did not recover - offering reconnect")
 
-        if (this.serverAliveCache !== null) {
-            alive = this.serverAliveCache
-            console.info(`✅ Using cached server health: ${alive ? 'alive' : 'dead'}`)
-        } else if (this.serverCheckPromise) {
-            console.info("⏳ Waiting for in-flight check...")
-            alive = await this.serverCheckPromise
-        } else {
-            console.warn("⚠️ Running immediate check...")
-            alive = await this.isWebServerAlive()
-        }
+        showMessage("Connection lost. Click OK to reconnect. Hold esc to get cursor if in fullscreen").then(() => {
+            this.allowPageReload()
+            window.location.reload()
+        })
+    }, 15000)
 
-        if (!alive) {
-            console.error("❌ Server dead - navigating home NOW")
-            this.navigateHome()
-        } else {
-            console.info("✅ Server alive - waiting 15s for auto-recovery...")
-            
-            // Start 15s countdown for WebRTC to recover
-            const recoveryTimeout = setTimeout(() => {
-                if (this.navigatingHome) return
-                
-                // After 15s, offer manual reconnect
-                console.warn("⏰ 15s elapsed without recovery - offering reconnect")
-                showMessage("Connection lost. Click OK to reconnect. Hold esc to get cursor if in fullscreen").then(() => {
-                    this.allowPageReload()
-                    window.location.reload()
-                })
-            }, 15000)
-            
-            // If connection recovers before 15s, cancel the prompt
-            const checkRecovery = () => {
-                if (this.lastConnectionStatus === "Ok") {
-                    console.info("✅ Connection recovered - canceling reconnect prompt")
-                    clearTimeout(recoveryTimeout)
-                }
-            }
-            
-            // Check every second if connection recovered
-            const recoveryCheckInterval = setInterval(checkRecovery, 1000)
-            
-            // Clean up interval after 15s
-            setTimeout(() => clearInterval(recoveryCheckInterval), 15000)
+    const checkRecovery = () => {
+        if (this.lastConnectionStatus === "Ok") {
+            console.info("✅ Connection recovered")
+            clearTimeout(recoveryTimeout)
         }
     }
+
+    const recoveryCheckInterval = setInterval(checkRecovery, 1000)
+
+    setTimeout(() => clearInterval(recoveryCheckInterval), 15000)
+}
 
     private focusInput() {
         if (this.stream?.getInput().getCurrentPredictedTouchAction() != "screenKeyboard" && !this.sidebar.getScreenKeyboard().isVisible()) {
@@ -544,46 +522,65 @@ private startBackgroundServerCheck() {
 
     async requestFullscreen() {
         const body = document.body
-        if (body) {
-            if (!("requestFullscreen" in body && typeof body.requestFullscreen == "function")) {
-                await showMessage("Fullscreen is not supported by your browser!")
-                return
-            }
-
-            this.focusInput()
-
-            if (!this.isFullscreen()) {
-                try {
-                    await body.requestFullscreen({ navigationUI: "hide" })
-                } catch (e) {
-                    console.warn("failed to request fullscreen", e)
+        this.immersiveTransitionInProgress = true
+        try {
+            if (body) {
+                if (!("requestFullscreen" in body && typeof body.requestFullscreen == "function")) {
+                    await showMessage("Fullscreen is not supported by your browser!")
+                    return
                 }
-            }
 
-            if ("keyboard" in navigator && navigator.keyboard && "lock" in navigator.keyboard) {
-                try {
-                    await navigator.keyboard.lock()
-                    if (!this.hasShownFullscreenEscapeWarning) {
-                        await showMessage("To exit Fullscreen you'll have to hold ESC for a few seconds.")
-                    }
-                    this.hasShownFullscreenEscapeWarning = true
-                } catch (e) {
-                    console.warn("keyboard lock failed", e)
-                }
-            }
+                this.focusInput()
 
-            try {
-                if (screen && "orientation" in screen) {
-                    const orientation = screen.orientation
-                    if ("lock" in orientation && typeof orientation.lock == "function") {
-                        await orientation.lock("landscape")
+                if (!this.isFullscreen()) {
+                    try {
+                        await body.requestFullscreen({ navigationUI: "hide" })
+                        // Wait for fullscreenchange event to fire
+                        await new Promise(resolve => {
+                            const handler = () => {
+                                document.removeEventListener("fullscreenchange", handler)
+                                resolve(undefined)
+                            }
+                            document.addEventListener("fullscreenchange", handler, { once: true })
+                            // Safety timeout in case event doesn't fire
+                            setTimeout(() => {
+                                document.removeEventListener("fullscreenchange", handler)
+                                resolve(undefined)
+                            }, 2000)
+                        })
+                    } catch (e) {
+                        console.warn("failed to request fullscreen", e)
                     }
                 }
-            } catch (e) {
-                console.warn("failed to set orientation to landscape", e)
+
+                if ("keyboard" in navigator && navigator.keyboard && "lock" in navigator.keyboard) {
+                    try {
+                        await navigator.keyboard.lock()
+                        if (!this.hasShownFullscreenEscapeWarning) {
+                            await showMessage("To exit Fullscreen you'll have to hold ESC for a few seconds.")
+                        }
+                        this.hasShownFullscreenEscapeWarning = true
+                    } catch (e) {
+                        console.warn("keyboard lock failed", e)
+                    }
+                }
+
+                try {
+                    if (screen && "orientation" in screen) {
+                        const orientation = screen.orientation
+                        if ("lock" in orientation && typeof orientation.lock == "function") {
+                            await orientation.lock("landscape")
+                        }
+                    }
+                } catch (e) {
+                    console.warn("failed to set orientation to landscape", e)
+                }
+            } else {
+                console.warn("root element not found")
             }
-        } else {
-            console.warn("root element not found")
+        } finally {
+            // Give browser time to stabilize after all fullscreen operations
+            setTimeout(() => { this.immersiveTransitionInProgress = false }, 2000)
         }
     }
     async exitFullscreen() {

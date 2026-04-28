@@ -46,8 +46,8 @@ function onTouchMove(event: TouchEvent) {
     }
     event.preventDefault()
     event.stopImmediatePropagation()
-
-    for (const touch of event.changedTouches) {
+    
+for (const touch of Array.from(event.changedTouches)) {
         const tracker = touchTracker.get(touch.identifier)
         if (!tracker) {
             continue

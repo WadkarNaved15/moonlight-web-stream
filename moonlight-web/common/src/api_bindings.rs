@@ -462,6 +462,7 @@ pub enum StreamServerMessage {
     ConnectionTerminated {
         error_code: i32,
     },
+    NavigateHome,
 }
 
 #[derive(Serialize, Deserialize, Debug, TS)]

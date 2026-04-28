@@ -120,7 +120,7 @@ class WebSocketDataTransportChannel implements DataTransportChannel {
 
         const buffer = this.buffer.getRemainingBuffer()
         for (const listener of this.receiveListeners) {
-            listener(buffer.buffer)
+            listener(buffer.buffer as ArrayBuffer)
         }
     }
 
@@ -132,7 +132,7 @@ class WebSocketDataTransportChannel implements DataTransportChannel {
 
         this.buffer.flip()
 
-        this.ws.send(this.buffer.getRemainingBuffer())
+       this.ws.send(this.buffer.getRemainingBuffer().buffer.slice(0) as ArrayBuffer)
     }
 
     estimatedBufferedBytes(): number | null {

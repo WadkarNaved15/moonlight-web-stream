@@ -161,6 +161,14 @@ export class Stream implements Component {
     }
 
     private async onMessage(message: StreamServerMessage) {
+        if (typeof message === "string") {
+        if (message === "NavigateHome") {
+            for (const listener of this.gameExitListeners) {
+                listener()
+            }
+        }
+        return
+    }
         if ("DebugLog" in message) {
             const debugLog = message.DebugLog
 
@@ -653,7 +661,7 @@ export class Stream implements Component {
                     const buffer = new ByteBuffer(1)
                     buffer.putU8(0)
                     buffer.flip()
-                    video.send(buffer.getRemainingBuffer().buffer)
+                    video.send(buffer.getRemainingBuffer().buffer as ArrayBuffer)
                 }
             })
 

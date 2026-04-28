@@ -30,7 +30,7 @@ function trySendChannel(channel: DataTransportChannel | null, buffer: ByteBuffer
     if (readBuffer.length == 0) {
         throw "illegal buffer size"
     }
-    channel.send(readBuffer.buffer)
+    channel.send(readBuffer.buffer as ArrayBuffer)
 }
 
 export type MouseScrollMode = "highres" | "normal"
@@ -394,16 +394,16 @@ export class StreamInput {
     }
 
     onTouchStart(event: TouchEvent, rect: DOMRect) {
-        for (const touch of event.changedTouches) {
+        for (const touch of Array.from(event.changedTouches)){
             this.updateTouchTracker(touch)
         }
 
         if (this.config.touchMode == "touch") {
-            for (const touch of event.changedTouches) {
+            for (const touch of Array.from(event.changedTouches)) {
                 this.sendTouch(0, touch, rect)
             }
         } else if (this.config.touchMode == "mouseRelative" || this.config.touchMode == "pointAndDrag") {
-            for (const touch of event.changedTouches) {
+            for (const touch of Array.from(event.changedTouches)) {
                 if (this.primaryTouch == null) {
                     this.primaryTouch = touch.identifier
                     this.touchMouseAction = "default"

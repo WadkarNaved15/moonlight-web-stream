@@ -1,7 +1,9 @@
 use common::config::Config;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 use std::{io::ErrorKind, path::PathBuf, str::FromStr};
-use tokio::fs::{self, File};
+use tokio::fs::{self};
+use simplelog::*;
+use std::fs::File;
 
 use actix_web::{
     App as ActixApp, HttpServer,
@@ -88,15 +90,16 @@ async fn main() {
     )];
 
     if let Some(file_path) = &config.log.file_path {
-        let file = File::create(file_path)
-            .await
-            .expect("failed to open log file");
+        let file = std::fs::OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(file_path)
+    .expect("failed to open log file");
 
         loggers.push(WriteLogger::new(
             config.log.level_filter,
             log_config,
-            file.try_into_std()
-                .expect("failed to cast tokio file into std file"),
+            file,
         ));
     }
 

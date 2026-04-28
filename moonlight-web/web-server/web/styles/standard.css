@@ -18,11 +18,12 @@
     pointer-events: none;
 }
 
-
 #splash-screen img {
-    width: 100vw;
-    height: 100vh;
-    object-fit: cover; /* fills screen, crops if needed */
+    max-width: 500px;
+    width: 80%;
+    height: auto;
+    object-fit: contain;
+    margin-bottom: 40px;
 }
 
 
@@ -32,7 +33,6 @@
     background: rgba(255,255,255,0.15);
     border-radius: 4px;
     overflow: hidden;
-    margin-top: 30px;
 }
 
 .game-loader-bar {
