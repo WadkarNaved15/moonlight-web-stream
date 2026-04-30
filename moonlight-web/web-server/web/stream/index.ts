@@ -783,6 +783,11 @@ export class Stream implements Component {
     }
     private onWsClose() {
         this.debugLog(`Web Socket Closed`)
+
+        // Notify UI that the stream ended
+        for (const listener of this.gameExitListeners) {
+            listener()
+        }
     }
     private onError(event: Event) {
         this.debugLog(`Web Socket or WebRtcPeer Error`)
