@@ -4,7 +4,7 @@ import { Component } from "./component/index.js";
 import { showErrorPopup } from "./component/error.js";
 import { InfoEvent, Stream } from "./stream/index.js"
 import { getModalBackground, Modal, showMessage, showModal } from "./component/modal/index.js";
-import { getSidebarRoot, setSidebar, setSidebarExtended, setSidebarStyle, Sidebar } from "./component/sidebar/index.js";
+import { getSidebarRoot, setSidebar, setSidebarExtended, setSidebarStyle, setSidebarVisible, Sidebar } from "./component/sidebar/index.js";
 import { defaultStreamInputConfig, MouseMode, ScreenKeyboardSetVisibleEvent, StreamInputConfig } from "./stream/input.js";
 import { defaultSettings, getLocalStreamSettings, Settings } from "./component/settings_menu.js";
 import { SelectComponent } from "./component/input.js";
@@ -52,12 +52,20 @@ function hideSplash() {
     const splash = document.getElementById("splash-screen")
     if (!splash) return
 
-    splash.classList.add("hidden")
+    splash.classList.add("sc-fadeout")
     document.body.classList.remove("loading")
 
-    setTimeout(() => splash.remove(), 500)
+    // 2. Wait for the 0.8s animation to finish, then clean up completely
+    setTimeout(() => {
+        // Stop the heavy canvas background animations to save CPU/Battery
+        if (typeof (window as any).cleanupSplashScreen === "function") {
+            (window as any).cleanupSplashScreen()
+        }
+        
+        // Remove from DOM
+        splash.remove()
+    }, 800)
 }
-
 async function startApp() {
     const api = await getApi()
 
@@ -660,6 +668,16 @@ private async handleConnectionFailed() {
         } else {
             setSidebar(this.sidebar)
         }
+        const isFullscreen = this.isFullscreen();
+        const isPointerLocked = !!document.pointerLockElement;
+
+        // If the user is fully immersed (Fullscreen + Locked Mouse), hide everything
+        if (isFullscreen && isPointerLocked) {
+            setSidebarVisible(false); // Uses the new function we created above
+        } else {
+            setSidebarVisible(true);  // Bring it back if they ESC or unlock
+            setSidebar(this.sidebar);
+        }
     }
 
     mount(parent: HTMLElement): void {
@@ -722,146 +740,117 @@ class ConnectionInfoModal implements Modal<void> {
 
 
 class ViewerSidebar implements Component, Sidebar {
-    private app: ViewerApp
-
-    private div = document.createElement("div")
-    private buttonDiv = document.createElement("div")
-
-    private sendKeycodeButton = document.createElement("button")
-    private keyboardButton = document.createElement("button")
-    private screenKeyboard = new ScreenKeyboard()
-    private lockMouseButton = document.createElement("button")
-    private fullscreenButton = document.createElement("button")
-    private statsButton = document.createElement("button")
-    private reconnectButton = document.createElement("button")
-
-    private mouseMode: SelectComponent
-    private touchMode: SelectComponent
+    private app: ViewerApp;
+    private div = document.createElement("div");
+    
+    // Restored the hidden screen keyboard instance
+    private screenKeyboard = new ScreenKeyboard();
 
     constructor(app: ViewerApp) {
-        this.app = app
+        this.app = app;
+        
+        // This is the main pill container
+        this.div.classList.add("gamebar-container");
 
-        this.div.classList.add("sidebar-stream")
-        this.buttonDiv.classList.add("sidebar-stream-buttons")
-        this.div.appendChild(this.buttonDiv)
-
-        this.sendKeycodeButton.innerText = "Send Keycode"
-        this.sendKeycodeButton.addEventListener("click", async () => {
-            const key = await showModal(new SendKeycodeModal())
-            if (key == null) return
-            this.app.getStream()?.getInput().sendKey(true, key, 0)
-            this.app.getStream()?.getInput().sendKey(false, key, 0)
-        })
-        this.buttonDiv.appendChild(this.sendKeycodeButton)
-
-        this.lockMouseButton.innerText = "Lock Mouse"
-        this.lockMouseButton.addEventListener("click", async () => {
-            await this.app.requestPointerLock(true)
-        })
-        this.buttonDiv.appendChild(this.lockMouseButton)
-
-        this.keyboardButton.innerText = "Keyboard"
-        this.keyboardButton.addEventListener("click", async () => {
-            setSidebarExtended(false)
-            this.screenKeyboard.show()
-        })
-        this.buttonDiv.appendChild(this.keyboardButton)
-
-        this.screenKeyboard.addKeyDownListener(this.onKeyDown.bind(this))
-        this.screenKeyboard.addKeyUpListener(this.onKeyUp.bind(this))
-        this.screenKeyboard.addTextListener(this.onText.bind(this))
-        this.div.appendChild(this.screenKeyboard.getHiddenElement())
-
-        this.fullscreenButton.innerText = "Fullscreen"
-        this.fullscreenButton.addEventListener("click", async () => {
+        // 1. FULLSCREEN BUTTON
+        const btnFullscreen = document.createElement("button");
+        btnFullscreen.className = "gamebar-btn";
+        btnFullscreen.innerHTML = `
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+            <span>Fullscreen</span>
+        `;
+        btnFullscreen.onclick = async () => {
             if (this.app.isFullscreen()) {
-                await this.app.exitFullscreen()
+                await this.app.exitFullscreen();
             } else {
-                await this.app.requestFullscreen()
+                await this.app.requestFullscreen();
             }
-        })
-        this.buttonDiv.appendChild(this.fullscreenButton)
+        };
 
-        this.statsButton.innerText = "Stats"
-        this.statsButton.addEventListener("click", () => {
-            const stats = this.app.getStream()?.getStats()
-            if (stats) {
-                stats.toggle()
+        // 2. LOCK MOUSE BUTTON
+        const btnLockMouse = document.createElement("button");
+        btnLockMouse.className = "gamebar-btn";
+        btnLockMouse.innerHTML = `
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="7"></rect><path d="M12 6v4"></path></svg>
+            <span>Lock Mouse</span>
+        `;
+        btnLockMouse.onclick = async () => {
+            await this.app.requestPointerLock(true);
+        };
+
+        // 3. END STREAM BUTTON
+        const btnEndStream = document.createElement("button");
+        btnEndStream.className = "gamebar-btn btn-danger";
+        btnEndStream.innerHTML = `
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
+            <span>End Stream</span>
+        `;
+        btnEndStream.onclick = async () => {
+            if (!confirm("Are you sure you want to end your gaming session?")) return;
+            
+            const token = window.location.hostname.split(".")[0];
+            btnEndStream.innerHTML = `<span>Ending...</span>`;
+            btnEndStream.disabled = true;
+
+            try {
+                // Calls the new cancel-by-token API
+                await fetch(`https://backend.rigzer.com/api/sessions/cancel-by-token/${token}`, { method: "POST" });
+                window.location.replace("https://rigzer.com");
+            } catch(e) {
+                console.error("Failed to end stream", e);
+                btnEndStream.innerHTML = `<span>Error</span>`;
+                btnEndStream.disabled = false;
             }
-        })
-        this.buttonDiv.appendChild(this.statsButton)
+        };
 
-        this.reconnectButton.innerText = "Reconnect Stream"
-        this.reconnectButton.addEventListener("click", async () => {
-            await showMessage("Reconnecting… This may take 5–10 seconds.")
-            this.app.allowPageReload()
-            window.location.reload()
-        })
-        this.buttonDiv.appendChild(this.reconnectButton)
+        // Append buttons to container
+        this.div.appendChild(btnFullscreen);
+        this.div.appendChild(btnLockMouse);
+        this.div.appendChild(btnEndStream);
 
-        this.mouseMode = new SelectComponent("mouseMode", [
-            { value: "relative", name: "Relative" },
-            { value: "follow", name: "Follow" },
-            { value: "pointAndDrag", name: "Point and Drag" }
-        ], {
-            displayName: "Mouse Mode",
-            preSelectedOption: this.app.getInputConfig().mouseMode
-        })
-        this.mouseMode.addChangeListener(this.onMouseModeChange.bind(this))
-        this.mouseMode.mount(this.div)
-
-        this.touchMode = new SelectComponent("touchMode", [
-            { value: "touch", name: "Touch" },
-            { value: "mouseRelative", name: "Relative" },
-            { value: "pointAndDrag", name: "Point and Drag" }
-        ], {
-            displayName: "Touch Mode",
-            preSelectedOption: this.app.getInputConfig().touchMode
-        })
-        this.touchMode.addChangeListener(this.onTouchModeChange.bind(this))
-        this.touchMode.mount(this.div)
+        // Restored: Keyboard event listeners so mobile typing doesn't break
+        this.screenKeyboard.addKeyDownListener(this.onKeyDown.bind(this));
+        this.screenKeyboard.addKeyUpListener(this.onKeyUp.bind(this));
+        this.screenKeyboard.addTextListener(this.onText.bind(this));
+        this.div.appendChild(this.screenKeyboard.getHiddenElement());
     }
 
+    // --- RESTORED MISSING METHODS FOR TYPESCRIPT ---
+
     onCapabilitiesChange(capabilities: StreamCapabilities) {
-        this.touchMode.setOptionEnabled("touch", capabilities.touch)
+        // We removed the touch UI dropdown, so this can safely do nothing now,
+        // but the method must exist for ViewerApp to call it!
     }
 
     getScreenKeyboard(): ScreenKeyboard {
-        return this.screenKeyboard
+        return this.screenKeyboard;
     }
 
     private onText(event: TextEvent) {
-        this.app.getStream()?.getInput().sendText(event.detail.text)
+        this.app.getStream()?.getInput().sendText(event.detail.text);
     }
+    
     private onKeyDown(event: KeyboardEvent) {
-        this.app.getStream()?.getInput().onKeyDown(event)
+        this.app.getStream()?.getInput().onKeyDown(event);
     }
+    
     private onKeyUp(event: KeyboardEvent) {
-        this.app.getStream()?.getInput().onKeyUp(event)
+        this.app.getStream()?.getInput().onKeyUp(event);
     }
 
-    private onMouseModeChange() {
-        const config = this.app.getInputConfig()
-        config.mouseMode = this.mouseMode.getValue() as any
-        this.app.setInputConfig(config)
-    }
-
-    private onTouchModeChange() {
-        const config = this.app.getInputConfig()
-        config.touchMode = this.touchMode.getValue() as any
-        this.app.setInputConfig(config)
-    }
+    // ------------------------------------------------
 
     extended(): void {}
     unextend(): void {}
-
-    mount(parent: HTMLElement): void {
-        parent.appendChild(this.div)
+    
+    mount(parent: HTMLElement): void { 
+        parent.appendChild(this.div); 
     }
-    unmount(parent: HTMLElement): void {
-        parent.removeChild(this.div)
+    unmount(parent: HTMLElement): void { 
+        parent.removeChild(this.div); 
     }
 }
+
 
 class SendKeycodeModal extends FormModal<number> {
     private dropdownSearch: SelectComponent

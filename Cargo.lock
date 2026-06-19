@@ -2204,6 +2204,7 @@ dependencies = [
  "bindgen",
  "cmake",
  "openssl-sys",
+ "printf-compat",
 ]
 
 [[package]]
@@ -2630,9 +2631,9 @@ dependencies = [
 
 [[package]]
 name = "printf-compat"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc59ed27b89680906b89a667e44ce3978148aed3027222bcf27d058ac68bfcfb"
+checksum = "613142bc127747febf3eae56e000f1be431756a6eaa8d3f060f9144d938e798c"
 dependencies = [
  "bitflags 2.9.1",
  "itertools 0.14.0",

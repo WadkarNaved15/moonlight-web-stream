@@ -16,7 +16,7 @@ thiserror = { workspace = true }
 
 # Stream
 moonlight-common-sys = { workspace = true, optional = true }
-printf-compat = { workspace = true, optional = true }
+printf-compat = { optional = true, version = "0.4.0" }
 
 # Network
 uuid = { workspace = true, features = ["v4"], optional = true }

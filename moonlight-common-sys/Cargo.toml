@@ -6,6 +6,7 @@ license = { workspace = true }
 
 [dependencies]
 openssl-sys = { workspace = true }
+printf-compat = "0.4.0"
 
 [features]
 default = ["vendored", "openssl-sys/vendored"]
