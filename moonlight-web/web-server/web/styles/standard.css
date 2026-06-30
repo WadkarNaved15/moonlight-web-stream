@@ -465,118 +465,172 @@ input[type=number] {
     translate: -30% -30%;
     transition: all 0.1s linear, opacity 0.1s ease-out;
 }
-
 /* =========================================
-   RIGZER CLOUD GAMING OVERLAY 
+   RIGZER CLOUD GAMING OVERLAY (COMPACT)
    ========================================= */
 
 #sidebar-root {
     position: fixed;
-    top: 24px;
-    left: 50%;
-    /* Keep this transform! This is what centers your menu */
-    transform: translateX(-50%); 
+    top: 50px; 
+    right: 12px; 
+    left: auto;
+    transform: none; 
     z-index: 9999;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.2s ease !important;
+    transform-origin: top right;
+    transform: scale(0.95);
+    transition: opacity 0.2s ease, transform 0.2s ease !important;
 }
 
 #sidebar-root.sidebar-show {
     opacity: 1;
     pointer-events: auto;
+    transform: scale(1); 
 }
 
-/* Apply 'none' only to elements that should not move/animate, 
-   NOT to the root anchor which needs transform to center */
 .gamebar-container, .gamebar-btn, .sidebar-button {
     transition: none !important;
     transform: none !important;
 }
 
-/* 2. Re-apply ONLY the color transition for the buttons */
 .gamebar-btn {
     transition: background-color 0.2s ease !important;
 }
 
-/* 3. Re-apply ONLY the opacity transition for the handle and root */
 .sidebar-button, 
 #sidebar-root {
-    transition: opacity 0.2s ease !important;
+    transition: opacity 0.2s ease, transform 0.2s ease !important;
 }
 
+/* =========================================
+   THE TOP RIGHT MENU HANDLE (Glass Trigger)
+   ========================================= */
 
-#sidebar-root.sidebar-show {
-    opacity: 1;
-    pointer-events: auto;
+/* The Welcome Fade Animation - Updated for Glass Effect */
+@keyframes welcomeFade {
+    0%   { opacity: 1; background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.15); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+    80%  { opacity: 1; background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.15); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+    100% { opacity: 0.8; background: transparent; border-color: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+/* Trigger the fade automatically when the overlay shows up */
+#sidebar-root.sidebar-show .sidebar-button {
+    animation: welcomeFade 10s ease-out forwards;
 }
 
 .sidebar-button {
     position: fixed;
-    top: 0;
-    left: 50%;
-    transform: translateX(-50%); /* Handle needs to stay centered too */
-    background: rgba(70, 157, 132, 0.2);
-    backdrop-filter: blur(8px);
-    border: 1px solid rgba(70, 157, 132, 0.4);
-    border-top: none;
-    box-shadow: 0 0 15px rgba(70, 157, 132, 0.25);
-    width: 60px;
-    height: 24px;
-    border-bottom-left-radius: 12px;
-    border-bottom-right-radius: 12px;
+    top: 12px; 
+    right: 12px; 
+    left: auto;
+    transform: none; 
+    
+    /* STEALTH MODE: Completely transparent background and no blur */
+    background: transparent; 
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border: 1px solid transparent;
+    box-shadow: none; 
+    
+    width: 32px; 
+    height: 32px;
+    border-radius: 6px; 
     cursor: pointer;
     z-index: 10000;
     display: flex;
     justify-content: center;
     align-items: center;
-    transition: background 0.2s ease, opacity 0.2s ease !important;
+    
+    /* Resting opacity: Just the dots floating */
+    opacity: 0.7; 
+    transition: background 0.2s ease, opacity 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, backdrop-filter 0.2s ease !important;
 }
 
+/* Wakes up completely and turns into frosted glass when hovered */
+.sidebar-button:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.08); /* Faint white glass tint */
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.15); /* Frosted glass edge */
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.sidebar-button:active {
+    transform: scale(0.95) !important; 
+}
+
+/* Vertical dots with a strong shadow so they never get lost */
+.sidebar-button::after {
+    content: "⋮"; 
+    color: rgba(255, 255, 255, 0.95); 
+    font-size: 18px; 
+    line-height: 1;
+    margin-top: 2px;
+    text-shadow: 0 1px 4px rgba(0,0,0,1), 0 0 2px rgba(255,255,255,0.2); 
+}
+
+.sidebar-button-image {
+    display: none;
+}
+
+.sidebar-button.hidden-by-menu {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* =========================================
+   DROPDOWN MENU CONTAINER (Frosted Glass)
+   ========================================= */
+
 .gamebar-container {
-    background: rgba(70, 157, 132, 0.15);
-    backdrop-filter: blur(24px);
-    border: 1px solid rgba(70, 157, 132, 0.4);
-    box-shadow: 0 0 30px rgba(70, 157, 132, 0.35), inset 0 0 15px rgba(70, 157, 132, 0.1);
-    border-radius: 50px;
-    padding: 8px 16px;
+    background: rgba(15, 20, 18, 0.15); /* Very faint dark tint for text legibility */
+    backdrop-filter: blur(16px); /* Heavy blur for the glass effect */
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.1); /* Subtle frosted edge */
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25); /* Soft outer shadow */
+    border-radius: 10px;
+    padding: 6px; 
     display: flex;
-    align-items: center;
-    gap: 16px;
+    flex-direction: column; 
+    align-items: stretch;
+    gap: 2px;
+    min-width: 140px; 
     white-space: nowrap;
 }
 
-/* Base Button Styling */
+/* Compact Glass Button Styling */
 .gamebar-btn {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-left: 8px;
-    background: transparent;
+    justify-content: flex-start; 
+    gap: 10px; 
+    margin-left: 0;
+    background: transparent; /* No background by default */
     border: none;
     color: #e0e0e0;
-    padding: 10px 20px;
-    border-radius: 40px;
+    padding: 8px 12px; 
+    border-radius: 6px;
     font-family: system-ui, -apple-system, sans-serif;
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px; 
+    font-weight: 500;
     cursor: pointer;
 }
 
 .gamebar-btn svg {
-    width: 18px;
-    height: 18px;
+    width: 16px; 
+    height: 16px;
 }
 
-/* Add this to disable the jump specifically for buttons in your new Game Bar */
 .gamebar-container button {
     transform: none !important;
     box-shadow: none !important;
 }
 
-/* Hover Effects */
+/* Glassy highlight on hover */
 .gamebar-btn:hover {
-    background: rgba(70, 157, 132, 0.4);
+    background: rgba(255, 255, 255, 0.1); /* Frosted white highlight */
     color: #ffffff;
     transform: none !important;
     box-shadow: none !important;
@@ -588,60 +642,38 @@ input[type=number] {
 }
 
 .gamebar-btn.btn-danger:hover {
-    background: #ef4444;
-    color: #ffffff;
-    box-shadow: 0 0 16px rgba(239, 68, 68, 0.4);
+    background: rgba(239, 68, 68, 0.15); /* Glassy red highlight */
+    color: #ef4444;
+    box-shadow: none;
 }
 
 /* =========================================
-   THE TOP MENU HANDLE (To open the bar)
+   MESSAGE CARDS & MODALS
    ========================================= */
 
-.sidebar-button {
-    position: fixed;
-    top: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(70, 157, 132, 0.2); /* #469D84 tinted handle */
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    border: 1px solid rgba(70, 157, 132, 0.4);
-    border-top: none;
-    box-shadow: 0 0 15px rgba(70, 157, 132, 0.25); /* Rigzer Green Glow */
-    width: 60px;
-    height: 24px;
-    border-bottom-left-radius: 12px;
-    border-bottom-right-radius: 12px;
-    cursor: pointer;
-    z-index: 10000;
-    display: flex;
-    justify-content: center;
-    align-items: center;
+.modal-content, .modal-video-connect, .message-box {
+    background: rgba(12, 18, 15, 0.95) !important;
+    border: 1px solid rgba(70, 157, 132, 0.5) !important;
+    box-shadow: 0 0 30px rgba(70, 157, 132, 0.25) !important;
+    color: #ffffff !important;
+    border-radius: 12px !important;
+    backdrop-filter: blur(16px) !important;
 }
 
-.sidebar-button:hover {
-    background: rgba(70, 157, 132, 0.5);
+.modal-content button, .message-box button {
+    background: rgba(70, 157, 132, 0.2) !important;
+    border: 1px solid rgba(70, 157, 132, 0.5) !important;
+    color: white !important;
+    border-radius: 6px !important;
+    padding: 8px 16px !important;
+    cursor: pointer !important;
+    transition: background 0.2s ease !important;
 }
 
-/* Small visual dots on the handle */
-.sidebar-button::after {
-    content: "•••";
-    color: rgba(255, 255, 255, 0.8);
-    font-size: 12px;
-    letter-spacing: 2px;
-    line-height: 0;
+.modal-content button:hover, .message-box button:hover {
+    background: rgba(70, 157, 132, 0.5) !important;
 }
 
-/* Hide the trigger icon entirely, we are using the dots above */
-.sidebar-button-image {
-    display: none;
-}
-
-/* Hide the handle cleanly when the menu is open */
-.sidebar-button.hidden-by-menu {
-    opacity: 0;
-    pointer-events: none;
-}
 
 /** TODO: reorder stream sidebar */
 

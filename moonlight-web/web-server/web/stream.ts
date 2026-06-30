@@ -205,7 +205,7 @@ class ViewerApp implements Component {
 
         this.previousMouseMode = this.inputConfig.mouseMode
         this.toggleFullscreenWithKeybind = settings.toggleFullscreenWithKeybind
-        this.startStream(hostId, appId, settings, [browserWidth, browserHeight])
+        this.startStream(hostId, appId, settings, [0, 0])
 
         this.settings = settings
 
@@ -274,46 +274,6 @@ class ViewerApp implements Component {
         this.stream.addGameExitListener(() => {
             console.info("🎮 Game session ended on server - navigating home")
             this.navigateHome()
-        })
-
-        let immersiveAttempted = false
-        let streamReady = false
-
-        const attemptImmersive = async () => {
-            if (immersiveAttempted || !streamReady) return
-            immersiveAttempted = true
-            
-            await new Promise(resolve => setTimeout(resolve, 2500))
-
-            // Guard: don't attempt if already navigating away
-            if (this.navigatingHome) return
-
-            try {
-                if (!this.isFullscreen()) {
-                    await this.requestFullscreen()
-                    await new Promise(resolve => setTimeout(resolve, 800))
-                }
-            // Only lock pointer if connection is still healthy
-            if (!this.navigatingHome) {
-                await this.requestPointerLock()
-            }
-            } catch (err) {
-                console.error("❌ Immersive mode failed:", err)
-                immersiveAttempted = false
-            }
-        }
-
-        this.stream.addInfoListener((event) => {
-            if (event.detail.type === "connectionComplete") {
-                streamReady = true
-                const onFirstInteraction = () => {
-                    attemptImmersive()
-                    window.removeEventListener("pointerdown", onFirstInteraction)
-                    window.removeEventListener("keydown", onFirstInteraction)
-                }
-                window.addEventListener("pointerdown", onFirstInteraction)
-                window.addEventListener("keydown", onFirstInteraction)
-            }
         })
 
         const connectionInfo = new ConnectionInfoModal()
@@ -749,10 +709,10 @@ class ViewerSidebar implements Component, Sidebar {
     constructor(app: ViewerApp) {
         this.app = app;
         
-        // This is the main pill container
+        // This is the main dropdown container
         this.div.classList.add("gamebar-container");
 
-        // 1. FULLSCREEN BUTTON
+        // 1. COMBINED FULLSCREEN & LOCK MOUSE BUTTON
         const btnFullscreen = document.createElement("button");
         btnFullscreen.className = "gamebar-btn";
         btnFullscreen.innerHTML = `
@@ -761,24 +721,18 @@ class ViewerSidebar implements Component, Sidebar {
         `;
         btnFullscreen.onclick = async () => {
             if (this.app.isFullscreen()) {
+                await this.app.exitPointerLock();
                 await this.app.exitFullscreen();
             } else {
                 await this.app.requestFullscreen();
+                // Slight delay to ensure fullscreen registers before pointer lock
+                setTimeout(async () => {
+                    await this.app.requestPointerLock(true);
+                }, 150);
             }
         };
 
-        // 2. LOCK MOUSE BUTTON
-        const btnLockMouse = document.createElement("button");
-        btnLockMouse.className = "gamebar-btn";
-        btnLockMouse.innerHTML = `
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="7"></rect><path d="M12 6v4"></path></svg>
-            <span>Lock Mouse</span>
-        `;
-        btnLockMouse.onclick = async () => {
-            await this.app.requestPointerLock(true);
-        };
-
-        // 3. END STREAM BUTTON
+        // 2. END STREAM BUTTON
         const btnEndStream = document.createElement("button");
         btnEndStream.className = "gamebar-btn btn-danger";
         btnEndStream.innerHTML = `
@@ -793,7 +747,7 @@ class ViewerSidebar implements Component, Sidebar {
             btnEndStream.disabled = true;
 
             try {
-                // Calls the new cancel-by-token API
+                // Calls the cancel-by-token API
                 await fetch(`https://backend.rigzer.com/api/sessions/cancel-by-token/${token}`, { method: "POST" });
                 window.location.replace("https://rigzer.com");
             } catch(e) {
@@ -805,7 +759,6 @@ class ViewerSidebar implements Component, Sidebar {
 
         // Append buttons to container
         this.div.appendChild(btnFullscreen);
-        this.div.appendChild(btnLockMouse);
         this.div.appendChild(btnEndStream);
 
         // Restored: Keyboard event listeners so mobile typing doesn't break
@@ -815,11 +768,8 @@ class ViewerSidebar implements Component, Sidebar {
         this.div.appendChild(this.screenKeyboard.getHiddenElement());
     }
 
-    // --- RESTORED MISSING METHODS FOR TYPESCRIPT ---
-
     onCapabilitiesChange(capabilities: StreamCapabilities) {
-        // We removed the touch UI dropdown, so this can safely do nothing now,
-        // but the method must exist for ViewerApp to call it!
+        // Required by ViewerApp
     }
 
     getScreenKeyboard(): ScreenKeyboard {
@@ -838,8 +788,6 @@ class ViewerSidebar implements Component, Sidebar {
         this.app.getStream()?.getInput().onKeyUp(event);
     }
 
-    // ------------------------------------------------
-
     extended(): void {}
     unextend(): void {}
     
@@ -850,7 +798,6 @@ class ViewerSidebar implements Component, Sidebar {
         parent.removeChild(this.div); 
     }
 }
-
 
 class SendKeycodeModal extends FormModal<number> {
     private dropdownSearch: SelectComponent
