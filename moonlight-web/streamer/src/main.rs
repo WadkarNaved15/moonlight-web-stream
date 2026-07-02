@@ -744,6 +744,7 @@ impl StreamConnection {
     }
 
     async fn stop(&self) {
+         error!("STOP() CALLED");
         if self
             .is_terminating
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -843,48 +844,128 @@ impl ConnectionListener for StreamConnectionListener {
         ));
     }
 
-    fn connection_started(&mut self) {}
+   fn connection_started(&mut self) {
+    error!("================================================");
+    error!("MOONLIGHT CONNECTION STARTED");
+    error!("================================================");
 
-    fn connection_terminated(&mut self, error_code: i32) {
-        let Some(stream) = self.stream.upgrade() else {
-            warn!("Failed to get stream because it is already deallocated");
-            return;
-        };
+    let Some(stream) = self.stream.upgrade() else {
+        error!("connection_started: stream already deallocated");
+        return;
+    };
 
-        let mut ipc_sender = stream.ipc_sender.clone();
-        ipc_sender.blocking_send(StreamerIpcMessage::WebSocket(
-            StreamServerMessage::ConnectionTerminated { error_code },
-        ));
+    let mut ipc_sender = stream.ipc_sender.clone();
 
-        stream.runtime.clone().block_on(async move {
-            stream.stop().await;
-        });
-    }
+    ipc_sender.blocking_send(
+        StreamerIpcMessage::WebSocket(
+            StreamServerMessage::DebugLog {
+                message: "MOONLIGHT CONNECTION STARTED".to_string(),
+                ty: None,
+            },
+        ),
+    );
+}
+
+ fn connection_terminated(
+    &mut self,
+    error_code: i32,
+) {
+    error!("================================================");
+    error!("MOONLIGHT CONNECTION TERMINATED");
+    error!("ERROR CODE: {}", error_code);
+
+    let Some(stream) = self.stream.upgrade() else {
+        error!("stream already deallocated");
+        error!("================================================");
+        return;
+    };
+
+    error!(
+        "is_terminating={}",
+        stream
+            .is_terminating
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+
+    let mut ipc_sender = stream.ipc_sender.clone();
+
+    ipc_sender.blocking_send(
+        StreamerIpcMessage::WebSocket(
+            StreamServerMessage::DebugLog {
+                message: format!(
+                    "MOONLIGHT CONNECTION TERMINATED {}",
+                    error_code
+                ),
+                ty: Some(LogMessageType::Fatal),
+            },
+        ),
+    );
+
+    ipc_sender.blocking_send(
+        StreamerIpcMessage::WebSocket(
+            StreamServerMessage::ConnectionTerminated {
+                error_code,
+            },
+        ),
+    );
+
+    error!("CALLING STREAM.STOP()");
+
+    stream.runtime.clone().block_on(async move {
+        stream.stop().await;
+    });
+
+    error!("STREAM.STOP() RETURNED");
+    error!("================================================");
+}
 
     fn log_message(&mut self, message: &str) {
         info!(target: "moonlight", "{}", message.trim());
     }
 
-    fn connection_status_update(&mut self, status: ConnectionStatus) {
-        let Some(stream) = self.stream.upgrade() else {
-            warn!("Failed to get stream because it is already deallocated");
-            return;
-        };
+  fn connection_status_update(
+    &mut self,
+    status: ConnectionStatus,
+) {
+    error!(
+        "MOONLIGHT STATUS UPDATE: {:?}",
+        status
+    );
 
-        stream.clone().runtime.block_on(async move {
-            stream
-                .try_send_packet(
-                    OutboundPacket::General {
-                        message: GeneralServerMessage::ConnectionStatusUpdate {
+    let Some(stream) = self.stream.upgrade() else {
+        error!("status_update: stream already deallocated");
+        return;
+    };
+
+    let mut ipc_sender = stream.ipc_sender.clone();
+
+    ipc_sender.blocking_send(
+        StreamerIpcMessage::WebSocket(
+            StreamServerMessage::DebugLog {
+                message: format!(
+                    "MOONLIGHT STATUS: {:?}",
+                    status
+                ),
+                ty: None,
+            },
+        ),
+    );
+
+    stream.clone().runtime.block_on(async move {
+        stream
+            .try_send_packet(
+                OutboundPacket::General {
+                    message:
+                        GeneralServerMessage::ConnectionStatusUpdate {
                             status: status.into(),
                         },
-                    },
-                    "connection status update",
-                    true,
-                )
-                .await
-        })
-    }
+                },
+                "connection status update",
+                true,
+            )
+            .await
+    });
+}
 
     fn set_hdr_mode(&mut self, hdr_enabled: bool) {
         info!(

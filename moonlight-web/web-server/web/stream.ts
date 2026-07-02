@@ -236,15 +236,27 @@ class ViewerApp implements Component {
     }
 
 
-    private navigateHome() {
-        if (this.navigatingHome) return
-        this.navigatingHome = true
+private navigateHome(reason: string) {
+    if (this.navigatingHome) return;
 
-        window.removeEventListener("beforeunload", this.beforeUnloadHandler)
-        const home = getHomeOrigin()
-        console.info(`🏠 Navigating to home: ${home}`)
-        window.location.replace(home)
-    }
+    this.navigatingHome = true;
+
+    // const debug = {
+    //     reason,
+    //     ts: Date.now(),
+    //     connectionStatus: this.lastConnectionStatus,
+    //     url: window.location.href,
+    // };
+
+
+    // localStorage.setItem(
+    //     "navigation_reason",
+    //     JSON.stringify(debug)
+    // );
+
+    // TEMPORARILY COMMENT THIS
+    // window.location.replace(home)
+}
 
     private addListeners(element: GlobalEventHandlers) {
         element.addEventListener("keydown", this.onKeyDown.bind(this), { passive: false })
@@ -272,9 +284,21 @@ class ViewerApp implements Component {
         this.stream.addInfoListener(this.onInfo.bind(this))
 
         this.stream.addGameExitListener(() => {
-            console.info("🎮 Game session ended on server - navigating home")
-            this.navigateHome()
-        })
+    const data = {
+        ts: Date.now(),
+        event: "GameExit",
+        connectionStatus: this.lastConnectionStatus,
+    };
+
+    // console.error("GAME EXIT", data);
+
+    // localStorage.setItem(
+    //     "last_stream_event",
+    //     JSON.stringify(data)
+    // );
+
+    this.navigateHome("gameExit");
+});
 
         const connectionInfo = new ConnectionInfoModal()
         this.stream.addInfoListener(connectionInfo.onInfo.bind(connectionInfo))
