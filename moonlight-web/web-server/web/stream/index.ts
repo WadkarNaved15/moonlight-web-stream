@@ -355,6 +355,7 @@ export class Stream implements Component {
                     break
 
                 case 'connecting':
+                    this.clearConnectionCheckTimeout()
                     this.debugLog('🔄 WebRTC connecting...')
                     break
 
@@ -380,16 +381,23 @@ export class Stream implements Component {
                     break
 
                case 'failed':
-                    this.debugLog('❌ WebRTC connection failed permanently')
-                    this.clearConnectionCheckTimeout()
-                    
-                    const failedEvent: InfoEvent = new CustomEvent("stream-info", {
-                        detail: { type: "connectionStatus", status: "Poor" }
-                    })
+                    this.debugLog('WebRTC failed - waiting for recovery')
+
+                    if (!this.disconnectStartTime) {
+                        this.disconnectStartTime = Date.now()
+                    }
+
+                    const failedEvent: InfoEvent =
+                        new CustomEvent("stream-info", {
+                            detail: {
+                                type: "connectionStatus",
+                                status: "Poor"
+                            }
+                        })
+
                     this.eventTarget.dispatchEvent(failedEvent)
-                    
-                    // Fire immediately - no delay
-                    this.debugLog('Connection lost - WebRTC failed', { type: "fatalDescription" })
+
+                    this.scheduleConnectionCheck()
                     break
                 case 'closed':
                     this.debugLog('🚪 WebRTC connection closed')
@@ -410,17 +418,26 @@ export class Stream implements Component {
 
         this.connectionCheckTimeout = window.setTimeout(() => {
             // Only fire fatalDescription if STILL disconnected (not recovered)
-            if (this.connectionState === 'disconnected') {
-                const duration = Date.now() - (this.disconnectStartTime || 0)
-                this.debugLog(`Still disconnected after ${Math.round(duration / 1000)}s`)
-                
-                if (duration > 15000) {
-                    // Connection did not recover in 15s - treat as permanent failure
-                    this.debugLog('Connection lost for >15s - likely permanent', { type: "fatalDescription" })
-                } else {
-                    this.scheduleConnectionCheck()
-                }
-            }
+            if (
+    this.connectionState === 'disconnected' ||
+    this.connectionState === 'failed'
+) {
+    const duration =
+        Date.now() - (this.disconnectStartTime || 0)
+
+    this.debugLog(
+        `Still disconnected after ${Math.round(duration / 1000)}s`
+    )
+
+    if (duration > 15000) {
+        this.debugLog(
+            'Connection lost for >15s - likely permanent',
+            { type: "fatalDescription" }
+        )
+    } else {
+        this.scheduleConnectionCheck()
+    }
+}
             // If state is 'connected', 'failed', 'closed' etc - do nothing, already handled
         }, 5000)
     }

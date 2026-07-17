@@ -153,14 +153,18 @@ class ViewerApp implements Component {
     
     private immersiveTransitionInProgress = false
 
-    private beforeUnloadHandler = (e: BeforeUnloadEvent) => {
-        e.preventDefault()
-        e.returnValue = ""
-    }
+    private connectionRecoveryInProgress = false;
+    private recoveryTimeout: number | null = null;
+    private recoveryInterval: number | null = null;
 
-    public allowPageReload() {
-        window.removeEventListener("beforeunload", this.beforeUnloadHandler)
-    }
+        // private beforeUnloadHandler = (e: BeforeUnloadEvent) => {
+        //     e.preventDefault()
+        //     e.returnValue = ""
+        // }
+
+        // public allowPageReload() {
+        //     window.removeEventListener("beforeunload", this.beforeUnloadHandler)
+        // }
 
     // -- Connection health tracking
     private navigatingHome = false
@@ -178,7 +182,7 @@ class ViewerApp implements Component {
             history.pushState(null, "", location.href)
         })
 
-        window.addEventListener("beforeunload", this.beforeUnloadHandler)
+        // window.addEventListener("beforeunload", this.beforeUnloadHandler)
 
         this.sidebar = new ViewerSidebar(this)
         setSidebar(this.sidebar)
@@ -328,50 +332,78 @@ private navigateHome(reason: string) {
         }
 
         if (data.type === "connectionStatus") {
-            console.info(`🔌 Connection status: ${data.status}`)
-            this.lastConnectionStatus = data.status
-            return
+    this.lastConnectionStatus = data.status;
+
+    if (data.status === "Ok") {
+        if (this.recoveryTimeout) {
+            clearTimeout(this.recoveryTimeout);
+            this.recoveryTimeout = null;
         }
 
+        if (this.recoveryInterval) {
+            clearInterval(this.recoveryInterval);
+            this.recoveryInterval = null;
+        }
+
+        this.connectionRecoveryInProgress = false;
+    }
+
+    if (
+        data.status === "Poor" &&
+        !this.connectionRecoveryInProgress
+    ) {
+        this.handleConnectionFailed();
+    }
+
+    return;
+}
         if (data.type === "addDebugLine") {
             console.info(`[Stream] ${data.line}`)
 
             // Handle WebRTC-level fatal errors (network failure, not game exit)
             // ConnectionTerminated is handled by addGameExitListener, not here
-            if (data.additional?.type === "fatalDescription") {
-                this.handleConnectionFailed()
-            }
+            // if (data.additional?.type === "fatalDescription") {
+            //     this.handleConnectionFailed()
+            // }
 
             return
         }
     }
 
 private async handleConnectionFailed() {
-    if (this.navigatingHome) return
+    if (this.navigatingHome) return;
 
-    console.warn("🔌 Connection lost - waiting for recovery...")
-
-    const recoveryTimeout = setTimeout(() => {
-        if (this.navigatingHome) return
-
-        console.warn("⏰ Connection did not recover - offering reconnect")
-
-        showMessage("Connection lost. Click OK to reconnect. Hold esc to get cursor if in fullscreen").then(() => {
-            this.allowPageReload()
-            window.location.reload()
-        })
-    }, 15000)
-
-    const checkRecovery = () => {
-        if (this.lastConnectionStatus === "Ok") {
-            console.info("✅ Connection recovered")
-            clearTimeout(recoveryTimeout)
-        }
+    if (this.connectionRecoveryInProgress) {
+        console.log("Recovery already running");
+        return;
     }
 
-    const recoveryCheckInterval = setInterval(checkRecovery, 1000)
+    this.connectionRecoveryInProgress = true;
 
-    setTimeout(() => clearInterval(recoveryCheckInterval), 15000)
+    console.warn("Connection lost - waiting for recovery");
+
+    this.recoveryTimeout = window.setTimeout(() => {
+        this.connectionRecoveryInProgress = false;
+
+        showMessage(
+            "Connection lost. Click OK to reconnect."
+        ).then(() => {
+            // this.allowPageReload();
+            window.location.reload();
+        });
+
+    }, 15000);
+
+    this.recoveryInterval = window.setInterval(() => {
+        if (this.lastConnectionStatus === "Ok") {
+            console.log("Recovered");
+
+            clearTimeout(this.recoveryTimeout!);
+            clearInterval(this.recoveryInterval!);
+
+            this.connectionRecoveryInProgress = false;
+        }
+    }, 1000);
 }
 
     private focusInput() {
@@ -764,22 +796,36 @@ class ViewerSidebar implements Component, Sidebar {
             <span>End Stream</span>
         `;
         btnEndStream.onclick = async () => {
-            if (!confirm("Are you sure you want to end your gaming session?")) return;
-            
-            const token = window.location.hostname.split(".")[0];
-            btnEndStream.innerHTML = `<span>Ending...</span>`;
-            btnEndStream.disabled = true;
+    const token = window.location.hostname.split(".")[0];
 
-            try {
-                // Calls the cancel-by-token API
-                await fetch(`https://backend.rigzer.com/api/sessions/cancel-by-token/${token}`, { method: "POST" });
-                window.location.replace("https://rigzer.com");
-            } catch(e) {
-                console.error("Failed to end stream", e);
-                btnEndStream.innerHTML = `<span>Error</span>`;
-                btnEndStream.disabled = false;
+    btnEndStream.innerHTML = `<span>Ending...</span>`;
+    btnEndStream.disabled = true;
+
+    try {
+        await fetch(
+            `https://backend.rigzer.com/api/sessions/cancel-by-token/${token}`,
+            {
+                method: "POST",
+                credentials: "include",
             }
-        };
+        );
+
+        window.location.replace("https://rigzer.com");
+    } catch (e) {
+        console.error("Failed to end stream", e);
+
+        btnEndStream.innerHTML = `
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+                <line x1="12" y1="2" x2="12" y2="12"></line>
+            </svg>
+            <span>End Stream</span>
+        `;
+        btnEndStream.disabled = false;
+
+        await showMessage("Failed to end stream. Please try again.");
+    }
+};
 
         // Append buttons to container
         this.div.appendChild(btnFullscreen);
