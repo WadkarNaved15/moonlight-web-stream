@@ -68,6 +68,15 @@ export function setSidebar(sidebar: Sidebar | null) {
     }
 }
 
+export function setSidebarVisible(visible: boolean) {
+    if (sidebarRoot) {
+        sidebarRoot.style.display = visible ? "block" : "none";
+    }
+    if (sidebarButton) {
+        sidebarButton.style.display = visible ? "flex" : "none";
+    }
+}
+
 export function getSidebarRoot(): HTMLElement | null {
     return sidebarRoot
 }

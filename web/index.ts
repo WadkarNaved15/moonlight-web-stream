@@ -1,5 +1,17 @@
 import "./polyfill/index.js"
-import { Api, getApi, apiPostHost, FetchError, apiLogout, apiGetUser, tryLogin, apiGetHost, apiGetRole, apiPatchRole } from "./api.js";
+import {
+    Api,
+    getApi,
+    apiPostHost,
+    FetchError,
+    apiLogout,
+    apiGetUser,
+    tryLogin,
+    apiGetHost,
+    apiGetRole,
+    apiPatchRole,
+    apiGetApps
+} from "./api.js";
 import { AddHostModal } from "./component/host/add_modal.js";
 import { HostList } from "./component/host/list.js";
 import { Component, ComponentEvent } from "./component/index.js";
@@ -389,6 +401,41 @@ class MainApp implements Component {
             this.gameList?.forceFetch()
         ])
 
+        // Auto-select the only available host
+        // Auto-select host and launch Desktop
+if (this.currentDisplay === "hosts") {
+    const hosts = this.hostList.getHosts()
+
+    if (hosts.length === 1) {
+        const hostId = hosts[0].getHostId()
+
+        const apps = await apiGetApps(this.api, {
+            host_id: hostId
+        })
+
+        const desktopApp = apps.find(app =>
+            app.app_id === 1 ||
+            app.title.trim().toLowerCase() === "desktop"
+        )
+
+        if (desktopApp) {
+            this.startStreamForApp(hostId, desktopApp.app_id)
+            return
+        }
+
+        // Fallback if Desktop isn't found
+        this.setCurrentDisplay(
+            "games",
+            {
+                hostId,
+                hostCache: apps
+            },
+            true
+        )
+        return
+    }
+}
+
         if (this.currentDisplay == "games"
             && this.gameList
             && !this.hostList.getHost(this.gameList.getHostId())) {
@@ -402,6 +449,16 @@ class MainApp implements Component {
             this.refreshGameListActiveGame()
         ])
     }
+
+    private startStreamForApp(hostId: number, appId: number) {
+        const query = new URLSearchParams({
+            hostId: hostId.toString(),
+            appId: appId.toString(),
+        })
+
+        window.location.replace(buildUrl(`/stream.html?${query}`))
+    }
+
     private async refreshUserRole() {
         this.user = await apiGetUser(this.api)
 

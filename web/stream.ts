@@ -4,7 +4,7 @@ import { Component } from "./component/index.js";
 import { showNotification } from "./component/notification.js";
 import { InfoEvent, Stream } from "./stream/index.js"
 import { getModalBackground, Modal, showMessage, showModal } from "./component/modal/index.js";
-import { getSidebarRoot, setSidebar, setSidebarExtended, setSidebarStyle, Sidebar } from "./component/sidebar/index.js";
+import { getSidebarRoot, setSidebar, setSidebarExtended, setSidebarStyle, Sidebar  ,setSidebarVisible} from "./component/sidebar/index.js";
 import { defaultStreamInputConfig, MouseMode, ScreenKeyboardSetVisibleEvent, StreamInputConfig } from "./stream/input.js";
 import { getLocalStreamSettings, Settings, TransportType} from "./component/settings_menu.js";
 import { SelectComponent } from "./component/input.js";
@@ -40,8 +40,7 @@ async function startApp() {
     const appIdStr = queryParams.get("appId")
     if (hostIdStr == null || appIdStr == null) {
         await showMessage(I.stream.missingHostOrApp)
-
-        window.close()
+        window.location.replace(getHomeOrigin())
         return
     }
     const hostId = Number.parseInt(hostIdStr)
@@ -121,6 +120,30 @@ function parseLanguageFromQuery(queryParams: URLSearchParams): Language | undefi
 
 startApp()
 
+function getHomeOrigin(): string {
+    const meta = document.querySelector<HTMLMetaElement>(
+        'meta[name="home-origin"]'
+    )
+
+    if (meta?.content) {
+        return meta.content.replace(/\/$/, "")
+    }
+
+    if ((window as any).__HOME_ORIGIN__) {
+        return (window as any).__HOME_ORIGIN__.replace(/\/$/, "")
+    }
+
+    // LAST fallback: referrer origin (if same-site)
+    try {
+        if (document.referrer) {
+            return new URL(document.referrer).origin
+        }
+    } catch {}
+
+    // Absolute fallback (never breaks)
+    return window.location.origin
+}
+
 class ViewerApp implements Component {
     private api: Api
 
@@ -145,6 +168,20 @@ class ViewerApp implements Component {
     private hasShownFullscreenEscapeWarning = false
     private keyboardViewportBaselineHeight: number | null = null
     private streamVideoTopOffsetPx: number = 0
+    private beforeUnloadHandler = (e: BeforeUnloadEvent) => {
+        e.preventDefault()
+        e.returnValue = ""
+    }
+
+    navigateHome() {
+        // 🔓 allow navigation without browser prompt
+        window.removeEventListener("beforeunload", this.beforeUnloadHandler)
+
+        const home = getHomeOrigin()
+
+        // Hard reset navigation
+        window.location.replace(home)
+    }
 
     constructor(api: Api, hostId: number, appId: number, bootstrapRole: DetailedRole, options?: Partial<Settings>) {
         this.api = api
@@ -254,17 +291,17 @@ class ViewerApp implements Component {
         this.stream.addInfoListener(this.onInfo.bind(this))
 
         // Create connection info modal
-        const connectionInfo = new ConnectionInfoModal()
-        const connectionInfoListener = connectionInfo.onInfo.bind(connectionInfo)
-        this.stream.addInfoListener(connectionInfoListener)
-        void showModal(connectionInfo).then(async () => {
-            this.stream.removeInfoListener(connectionInfoListener)
-            if (this.autoEnterFullscreenOnStart && this.pendingAutoFullscreenPrompt && !this.fullscreenPromptShown && !this.isFullscreen()) {
-                this.fullscreenPromptShown = true
-                this.pendingAutoFullscreenPrompt = false
-                this.armFullscreenOnNextInteraction()
-            }
-        })
+        // const connectionInfo = new ConnectionInfoModal()
+        // const connectionInfoListener = connectionInfo.onInfo.bind(connectionInfo)
+        // this.stream.addInfoListener(connectionInfoListener)
+        // void showModal(connectionInfo).then(async () => {
+        //     this.stream.removeInfoListener(connectionInfoListener)
+        //     if (this.autoEnterFullscreenOnStart && this.pendingAutoFullscreenPrompt && !this.fullscreenPromptShown && !this.isFullscreen()) {
+        //         this.fullscreenPromptShown = true
+        //         this.pendingAutoFullscreenPrompt = false
+        //         this.armFullscreenOnNextInteraction()
+        //     }
+        // })
 
         // Start animation frame loop
         this.onTouchUpdate()
@@ -831,6 +868,7 @@ class ViewerApp implements Component {
         document.documentElement.style.removeProperty("--stream-keyboard-button-top")
     }
 
+
     mount(parent: HTMLElement): void {
         parent.appendChild(this.div)
     }
@@ -848,119 +886,119 @@ class ViewerApp implements Component {
     }
 }
 
-class ConnectionInfoModal implements Modal<void> {
+// class ConnectionInfoModal implements Modal<void> {
 
-    private eventTarget = new EventTarget()
+//     private eventTarget = new EventTarget()
 
-    private root = document.createElement("div")
+//     private root = document.createElement("div")
 
-    private textTy: LogMessageType | null = null
-    private text = document.createElement("p")
+//     private textTy: LogMessageType | null = null
+//     private text = document.createElement("p")
 
-    private options = document.createElement("div")
-    private debugDetailButton = document.createElement("button")
-    private closeButton = document.createElement("button")
+//     private options = document.createElement("div")
+//     private debugDetailButton = document.createElement("button")
+//     private closeButton = document.createElement("button")
 
-    private debugDetail = "" // We store this seperate because line breaks don't work when the element is not mounted on the dom
-    private debugDetailDisplay = document.createElement("div")
+//     private debugDetail = "" // We store this seperate because line breaks don't work when the element is not mounted on the dom
+//     private debugDetailDisplay = document.createElement("div")
 
-    constructor() {
-        this.root.classList.add("modal-video-connect")
+//     constructor() {
+//         this.root.classList.add("modal-video-connect")
 
-        this.text.innerText = I.stream.connecting
-        this.root.appendChild(this.text)
+//         this.text.innerText = I.stream.connecting
+//         this.root.appendChild(this.text)
 
-        this.root.appendChild(this.options)
-        this.options.classList.add("modal-video-connect-options")
+//         this.root.appendChild(this.options)
+//         this.options.classList.add("modal-video-connect-options")
 
-        this.debugDetailButton.innerText = I.stream.showLogs
-        this.debugDetailButton.addEventListener("click", this.onDebugDetailClick.bind(this))
-        this.options.appendChild(this.debugDetailButton)
+//         this.debugDetailButton.innerText = I.stream.showLogs
+//         this.debugDetailButton.addEventListener("click", this.onDebugDetailClick.bind(this))
+//         this.options.appendChild(this.debugDetailButton)
 
-        this.closeButton.innerText = I.stream.close
-        this.closeButton.addEventListener("click", this.onClose.bind(this))
-        this.options.appendChild(this.closeButton)
+//         this.closeButton.innerText = I.stream.close
+//         this.closeButton.addEventListener("click", this.onClose.bind(this))
+//         this.options.appendChild(this.closeButton)
 
-        this.debugDetailDisplay.classList.add("textlike")
-        this.debugDetailDisplay.classList.add("modal-video-connect-debug")
-    }
+//         this.debugDetailDisplay.classList.add("textlike")
+//         this.debugDetailDisplay.classList.add("modal-video-connect-debug")
+//     }
 
-    private onDebugDetailClick() {
-        let debugDetailCurrentlyShown = this.root.contains(this.debugDetailDisplay)
+//     private onDebugDetailClick() {
+//         let debugDetailCurrentlyShown = this.root.contains(this.debugDetailDisplay)
 
-        if (debugDetailCurrentlyShown) {
-            this.debugDetailButton.innerText = I.stream.showLogs
-            this.root.removeChild(this.debugDetailDisplay)
-        } else {
-            this.debugDetailButton.innerText = I.stream.hideLogs
-            this.root.appendChild(this.debugDetailDisplay)
-            this.debugDetailDisplay.innerText = this.debugDetail
-        }
-    }
+//         if (debugDetailCurrentlyShown) {
+//             this.debugDetailButton.innerText = I.stream.showLogs
+//             this.root.removeChild(this.debugDetailDisplay)
+//         } else {
+//             this.debugDetailButton.innerText = I.stream.hideLogs
+//             this.root.appendChild(this.debugDetailDisplay)
+//             this.debugDetailDisplay.innerText = this.debugDetail
+//         }
+//     }
 
-    private debugLog(line: string) {
-        this.debugDetail += `${line}\n`
-        this.debugDetailDisplay.innerText = this.debugDetail
-        console.info(`[Stream]: ${line}`)
-    }
+//     private debugLog(line: string) {
+//         this.debugDetail += `${line}\n`
+//         this.debugDetailDisplay.innerText = this.debugDetail
+//         console.info(`[Stream]: ${line}`)
+//     }
 
-    onInfo(event: InfoEvent) {
-        const data = event.detail
+//     onInfo(event: InfoEvent) {
+//         const data = event.detail
 
-        if (data.type == "connectionComplete") {
-            const text = I.stream.connectionComplete
-            this.text.innerText = text
-            this.debugLog(text)
-        } else if (data.type == "videoReady") {
+//         if (data.type == "connectionComplete") {
+//             const text = I.stream.connectionComplete
+//             this.text.innerText = text
+//             this.debugLog(text)
+//         } else if (data.type == "videoReady") {
 
-            this.eventTarget.dispatchEvent(new Event("ml-connected"))
-        } else if (data.type == "addDebugLine") {
-            const message = data.line.trim()
-            if (message) {
-                this.debugLog(message)
+//             this.eventTarget.dispatchEvent(new Event("ml-connected"))
+//         } else if (data.type == "addDebugLine") {
+//             const message = data.line.trim()
+//             if (message) {
+//                 this.debugLog(message)
 
-                if (!this.textTy) {
-                    this.text.innerText = message
-                    this.textTy = data.additional?.type ?? null
-                } else if (data.additional?.type == "fatalDescription" || data.additional?.type == "ifErrorDescription") {
-                    if (this.text.innerText) {
-                        this.text.innerText += "\n" + message
-                    } else {
-                        this.text.innerText = message
-                    }
-                    this.textTy = data.additional.type
-                }
-            }
+//                 if (!this.textTy) {
+//                     this.text.innerText = message
+//                     this.textTy = data.additional?.type ?? null
+//                 } else if (data.additional?.type == "fatalDescription" || data.additional?.type == "ifErrorDescription") {
+//                     if (this.text.innerText) {
+//                         this.text.innerText += "\n" + message
+//                     } else {
+//                         this.text.innerText = message
+//                     }
+//                     this.textTy = data.additional.type
+//                 }
+//             }
 
-            if (data.additional?.type == "fatal" || data.additional?.type == "fatalDescription") {
-                showModal(this)
-            } else if (data.additional?.type == "informError") {
-                showNotification(data.line)
-            }
-        } else if (data.type == "serverMessage") {
-            const text = I.stream.serverMessage(data.message)
-            this.text.innerText = text
-            this.debugLog(text)
-        }
-    }
+//             if (data.additional?.type == "fatal" || data.additional?.type == "fatalDescription") {
+//                 showModal(this)
+//             } else if (data.additional?.type == "informError") {
+//                 showNotification(data.line)
+//             }
+//         } else if (data.type == "serverMessage") {
+//             const text = I.stream.serverMessage(data.message)
+//             this.text.innerText = text
+//             this.debugLog(text)
+//         }
+//     }
 
-    onClose() {
-        showModal(null)
-    }
+//     onClose() {
+//         showModal(null)
+//     }
 
-    onFinish(abort: AbortSignal): Promise<void> {
-        return new Promise((resolve, reject) => {
-            this.eventTarget.addEventListener("ml-connected", () => resolve(), { once: true, signal: abort })
-        })
-    }
+//     onFinish(abort: AbortSignal): Promise<void> {
+//         return new Promise((resolve, reject) => {
+//             this.eventTarget.addEventListener("ml-connected", () => resolve(), { once: true, signal: abort })
+//         })
+//     }
 
-    mount(parent: HTMLElement): void {
-        parent.appendChild(this.root)
-    }
-    unmount(parent: HTMLElement): void {
-        parent.removeChild(this.root)
-    }
-}
+//     mount(parent: HTMLElement): void {
+//         parent.appendChild(this.root)
+//     }
+//     unmount(parent: HTMLElement): void {
+//         parent.removeChild(this.root)
+//     }
+// }
 
 class AutoFullscreenModal implements Component, Modal<void> {
     private message = document.createElement("p")
@@ -1111,11 +1149,7 @@ class ViewerSidebar implements Component, Sidebar {
                 }
             }
 
-            if (window.matchMedia('(display-mode: standalone)').matches) {
-                history.back()
-            } else {
-                window.close()
-            }
+            this.app.navigateHome()
 
         })
         this.buttonDiv.appendChild(this.exitStreamButton)

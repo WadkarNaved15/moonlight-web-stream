@@ -197,6 +197,40 @@ pub fn build_cookie<'a>(app: &'a App, expiration: Duration, session_str: &'a str
 }
 
 #[get("/authenticate")]
-async fn authenticate(_user: AuthenticatedUser) -> HttpResponse {
-    HttpResponse::Ok().finish()
+async fn authenticate(
+    app: Data<App>,
+    req: HttpRequest,
+) -> Result<HttpResponse, Error> {
+    // Existing session -> already authenticated
+    if req.cookie(COOKIE_SESSION_TOKEN_NAME).is_some() {
+        return Ok(HttpResponse::Ok().finish());
+    }
+
+    let web = &app.config().web_server;
+
+    // Auto-login disabled -> preserve existing behavior
+    if !web.auto_login {
+        return Err(AppError::SessionTokenNotFound.into());
+    }
+
+    // Authenticate using configured credentials
+    let user = app
+        .user_by_auth(UserAuth::UserPassword {
+            username: web.auto_login_user.clone(),
+            password: web.auto_login_password.clone(),
+        })
+        .await?;
+
+    // Create a new session
+    let expiration = web.session_cookie_expiration;
+    let session = user.new_session(expiration).await?;
+
+    let mut buf = [0; 64];
+    let session_str = session.encode(&mut buf);
+
+    Ok(
+        HttpResponse::Ok()
+            .cookie(build_cookie(&app, expiration, session_str))
+            .finish(),
+    )
 }

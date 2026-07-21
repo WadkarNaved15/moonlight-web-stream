@@ -255,6 +255,14 @@ pub struct WebServerConfig {
     pub default_user_id: Option<u32>,
     pub default_role_id: Option<u32>,
     pub forwarded_header: Option<ForwardedHeaders>,
+    #[serde(default)]
+    pub auto_login: bool,
+
+    #[serde(default)]
+    pub auto_login_user: String,
+
+    #[serde(default)]
+    pub auto_login_password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,6 +284,9 @@ impl Default for WebServerConfig {
             default_user_id: None,
             default_role_id: None,
             forwarded_header: None,
+            auto_login: true,
+            auto_login_user: "StreamUser".to_string(),
+            auto_login_password: "Testing@1901".to_string(),
         }
     }
 }
