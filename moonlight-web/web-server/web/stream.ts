@@ -240,26 +240,21 @@ class ViewerApp implements Component {
     }
 
 
-private navigateHome(reason: string) {
+private fallbackRecoveryTimer: number | null = null;
+
+private navigateHome(reason: string , homeUrl: string = getHomeOrigin()) {
     if (this.navigatingHome) return;
 
     this.navigatingHome = true;
 
-    // const debug = {
-    //     reason,
-    //     ts: Date.now(),
-    //     connectionStatus: this.lastConnectionStatus,
-    //     url: window.location.href,
-    // };
+    window.location.replace(homeUrl);
 
-
-    // localStorage.setItem(
-    //     "navigation_reason",
-    //     JSON.stringify(debug)
-    // );
-
-    // TEMPORARILY COMMENT THIS
-    // window.location.replace(home)
+    // If we're somehow still here after 2 seconds,
+    // show the recovery dialog instead of leaving the
+    // user on a frozen page.
+    this.fallbackRecoveryTimer = window.setTimeout(() => {
+        this.handleConnectionFailed(true);
+    }, 2000);
 }
 
     private addListeners(element: GlobalEventHandlers) {
@@ -287,21 +282,61 @@ private navigateHome(reason: string) {
 
         this.stream.addInfoListener(this.onInfo.bind(this))
 
-        this.stream.addGameExitListener(() => {
-    const data = {
-        ts: Date.now(),
-        event: "GameExit",
-        connectionStatus: this.lastConnectionStatus,
-    };
+this.stream.addGameExitListener(async () => {
+    const token = getStreamToken();
 
-    // console.error("GAME EXIT", data);
+    const sleep = (ms: number) =>
+        new Promise(resolve => setTimeout(resolve, ms));
 
-    // localStorage.setItem(
-    //     "last_stream_event",
-    //     JSON.stringify(data)
-    // );
+    try {
+        // Retry for up to 3 seconds because backend cleanup
+        // may take a moment after GameExit.
+        for (let attempt = 0; attempt < 6; attempt++) {
 
-    this.navigateHome("gameExit");
+            const res = await fetch(
+                `https://backend.rigzer.com/api/sessions/status-by-token/${token}`,
+                {
+                    method: "GET",
+                    credentials: "include",
+                }
+            );
+
+            console.log(
+                `[STATUS] Attempt ${attempt + 1} HTTP ${res.status}`
+            );
+
+            if (res.status === 404) {
+                console.log("[STATUS] Session token not found");
+                this.navigateHome("Session ended (token not found)");
+                return;
+            }
+
+            if (!res.ok) {
+                throw new Error(`HTTP ${res.status}`);
+            }
+
+            const data = await res.json();
+
+            if (!data.active) {
+                console.log("[STATUS] Session ended");
+                this.navigateHome("Session ended");
+                return;
+            }
+
+            // Session still active.
+            // Wait 500ms before checking again because
+            // Redis cleanup may still be in progress.
+            await sleep(500);
+        }
+
+        // Token never disappeared.
+        // Treat this as a normal network issue and let
+        // connectionStatus/handleConnectionFailed deal with it.
+
+    } catch (err) {
+        console.error("[STATUS] Check failed", err);
+        this.navigateHome("Session ended (server error)");
+    }
 });
 
         const connectionInfo = new ConnectionInfoModal()
@@ -325,10 +360,27 @@ private navigateHome(reason: string) {
         }
 
         if (data.type === "connectionComplete") {
-            this.sidebar.onCapabilitiesChange(data.capabilities)
-            startHeartbeat()  
-            requestAnimationFrame(() => hideSplash())
-            return
+            this.sidebar.onCapabilitiesChange(data.capabilities);
+            startHeartbeat();
+
+            requestAnimationFrame(async () => {
+                hideSplash();
+
+                await showMessage(
+                    "The game will now enter Fullscreen.",
+                    {
+                        title: "Fullscreen",
+                        confirmText: "Continue",
+                        keyboardKey: "ESC",
+                        keyboardHint: "Hold to exit Fullscreen."
+                    }
+                );
+
+                await this.requestFullscreen();
+                await this.requestPointerLock();
+            });
+
+            return;
         }
 
         if (data.type === "connectionStatus") {
@@ -370,8 +422,8 @@ private navigateHome(reason: string) {
         }
     }
 
-private async handleConnectionFailed() {
-    if (this.navigatingHome) return;
+private async handleConnectionFailed(isFallback: boolean = false) {
+    if (this.navigatingHome && !isFallback) return;
 
     if (this.connectionRecoveryInProgress) {
         console.log("Recovery already running");
@@ -380,32 +432,33 @@ private async handleConnectionFailed() {
 
     this.connectionRecoveryInProgress = true;
 
-    console.warn("Connection lost - waiting for recovery");
+    const timeout = isFallback ? 3000 : 15000;
 
-    this.recoveryTimeout = window.setTimeout(() => {
+    this.recoveryTimeout = window.setTimeout(async () => {
         this.connectionRecoveryInProgress = false;
 
-        showMessage(
-            "Connection lost. Click OK to reconnect."
-        ).then(() => {
-            // this.allowPageReload();
-            window.location.reload();
-        });
+        await showMessage(
+            "Click Reconnect to continue.",
+            {
+                title: "Connection Lost",
+                confirmText: "Reconnect",
+                variant: "error"
+            }
+        );
 
-    }, 15000);
+        // User clicked Reconnect
+        window.location.reload();
+
+    }, timeout);
 
     this.recoveryInterval = window.setInterval(() => {
         if (this.lastConnectionStatus === "Ok") {
-            console.log("Recovered");
-
             clearTimeout(this.recoveryTimeout!);
             clearInterval(this.recoveryInterval!);
-
             this.connectionRecoveryInProgress = false;
         }
     }, 1000);
 }
-
     private focusInput() {
         if (this.stream?.getInput().getCurrentPredictedTouchAction() != "screenKeyboard" && !this.sidebar.getScreenKeyboard().isVisible()) {
             const inputElement = document.getElementById("input") as HTMLDivElement
@@ -550,7 +603,14 @@ private async handleConnectionFailed() {
         try {
             if (body) {
                 if (!("requestFullscreen" in body && typeof body.requestFullscreen == "function")) {
-                    await showMessage("Fullscreen is not supported by your browser!")
+                    await showMessage(
+                        "Fullscreen isn't supported by your browser.",
+                        {
+                            title: "Unsupported Browser",
+                            confirmText: "OK",
+                            variant: "warning"
+                        }
+                    );
                     return
                 }
 
@@ -579,16 +639,12 @@ private async handleConnectionFailed() {
 
                 if ("keyboard" in navigator && navigator.keyboard && "lock" in navigator.keyboard) {
                     try {
-                        await navigator.keyboard.lock()
-                        if (!this.hasShownFullscreenEscapeWarning) {
-                            await showMessage("To exit Fullscreen you'll have to hold ESC for a few seconds.")
-                        }
-                        this.hasShownFullscreenEscapeWarning = true
+                        await navigator.keyboard.lock();
+                        this.hasShownFullscreenEscapeWarning = true;
                     } catch (e) {
-                        console.warn("keyboard lock failed", e)
+                        console.warn("keyboard lock failed", e);
                     }
                 }
-
                 try {
                     if (screen && "orientation" in screen) {
                         const orientation = screen.orientation
@@ -660,7 +716,14 @@ private async handleConnectionFailed() {
             }
 
         } else if (errorIfNotFound) {
-            await showMessage("Pointer Lock not supported")
+            await showMessage(
+                "Pointer Lock isn't supported by your browser.",
+                {
+                    title: "Unsupported Browser",
+                    confirmText: "OK",
+                    variant: "warning"
+                }
+            );
         }
     }
     async exitPointerLock() {
@@ -823,7 +886,14 @@ class ViewerSidebar implements Component, Sidebar {
         `;
         btnEndStream.disabled = false;
 
-        await showMessage("Failed to end stream. Please try again.");
+        await showMessage(
+    "Please try again.",
+    {
+        title: "Failed to End Stream",
+        confirmText: "OK",
+        variant: "error"
+    }
+);
     }
 };
 

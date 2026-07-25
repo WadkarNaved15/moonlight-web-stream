@@ -107,7 +107,13 @@ class PromptModal extends FormModal<string> {
 }
 
 type MessageInit = {
-    signal?: AbortSignal
+    signal?: AbortSignal;
+    title?: string;
+    confirmText?: string;
+    keyboardKey?: string;
+    keyboardHint?: string;
+
+    variant?: "default" | "error" | "warning" | "success";
 }
 
 export async function showMessage(message: string, init?: MessageInit) {
@@ -119,46 +125,169 @@ export async function showMessage(message: string, init?: MessageInit) {
 class MessageModal implements Component, Modal<void> {
 
     private signal?: AbortSignal
-    private textElement: HTMLElement = document.createElement("p")
-    private okButton: HTMLButtonElement = document.createElement("button")
+    private container = document.createElement("div");
+    private title = document.createElement("h3");
+    private textElement = document.createElement("p");
+    private escHint = document.createElement("div");
+    private escKey = document.createElement("span");
+    private escText = document.createElement("span");
+    private okButton = document.createElement("button");
+    private icon = document.createElement("div");
+    private header = document.createElement("div");
 
     constructor(message: string, init?: MessageInit) {
-        this.textElement.innerText = message
+        this.signal = init?.signal;
+        this.icon.className = "message-icon";
 
-        this.okButton.innerText = "Ok"
+        this.container.className = "message-box";
+        if (!init?.keyboardKey) {
+            this.icon.className = "message-icon";
 
-        this.signal = init?.signal
+            switch (init?.variant) {
+            case "error":
+                this.icon.innerHTML = `
+                    <svg viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="12" y1="7" x2="12" y2="13"/>
+                        <circle cx="12" cy="17" r="1"/>
+                    </svg>
+                `;
+                this.container.classList.add("message-error");
+                break;
+
+            case "warning":
+                this.icon.innerHTML = `
+                    <svg viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <path d="M12 3L2.8 19a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L12 3z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <circle cx="12" cy="17" r="1"/>
+                    </svg>
+                `;
+                this.container.classList.add("message-warning");
+                break;
+
+            case "success":
+                this.icon.innerHTML = `
+                    <svg viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/>
+                        <polyline points="8 12 11 15 16 9"/>
+                    </svg>
+                `;
+                this.container.classList.add("message-success");
+                break;
+
+            default:
+                this.icon.innerHTML = `
+                    <svg viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="12" y1="12" x2="12" y2="12"/>
+                        <line x1="12" y1="8" x2="12" y2="8"/>
+                    </svg>
+                `;
+                this.container.classList.add("message-default");
+                break;
+        }
+}
+
+
+        this.header.className = "message-header";
+
+        this.title.className = "message-title";
+        this.title.innerText = init?.title ?? "";
+
+        if (!init?.keyboardKey) {
+            this.header.append(this.icon);
+
+            if (this.title.innerText) {
+                this.header.append(this.title);
+            }
+        }
+
+        this.textElement.className = "message-text";
+
+        this.textElement.innerText = message;
+
+        this.okButton.innerText = init?.confirmText ?? "OK";
+
+        if (init?.keyboardKey && init?.keyboardHint) {
+            this.escHint.className = "message-shortcut";
+
+            this.escKey.className = "message-shortcut-key";
+            this.escKey.innerText = init.keyboardKey;
+
+            this.escText.className = "message-shortcut-text";
+            this.escText.innerText = init.keyboardHint;
+
+            this.escHint.append(this.escKey, this.escText);
+        }
     }
 
-    mount(parent: Element): void {
-        parent.appendChild(this.textElement)
-        parent.appendChild(this.okButton)
+mount(parent: Element): void {
+    const isRich = this.escHint.childElementCount > 0;
+
+    if (isRich) {
+        this.container.classList.add("message-box-rich");
+
+        if (this.title.innerText) {
+            this.container.append(this.title);
+        }
+
+        this.container.append(
+            this.textElement,
+            this.escHint,
+            this.okButton
+        );
+    } else {
+        this.container.classList.add("message-box-simple");
+
+        if (this.header.childElementCount > 0) {
+            this.container.append(this.header);
+        }
+
+        this.container.append(
+            this.textElement,
+            this.okButton
+        );
     }
+
+    parent.appendChild(this.container);
+}
+
     unmount(parent: Element): void {
-        parent.removeChild(this.textElement)
-        parent.removeChild(this.okButton)
+        parent.removeChild(this.container);
     }
 
-    onFinish(abort: AbortSignal): Promise<void> {
-        return new Promise((resolve, reject) => {
-            let customController: AbortController | null = null
+onFinish(abort: AbortSignal): Promise<void> {
+    return new Promise(resolve => {
 
-            if (this.signal) {
-                customController = new AbortController()
-                this.signal.addEventListener("abort", () => {
-                    resolve()
-                    customController?.abort()
-                }, { once: true, signal: customController.signal })
-            }
+        const finish = () => {
+            this.okButton.removeEventListener("click", finish);
+            resolve();
+        };
 
-            this.okButton.addEventListener("click", () => {
-                resolve()
-                customController?.abort()
-            }, { signal: customController?.signal })
+        this.okButton.addEventListener("click", finish, { once: true });
 
-            if (customController) {
-                abort.addEventListener("abort", customController.abort.bind(customController))
-            }
-        })
-    }
+        abort.addEventListener("abort", finish, { once: true });
+
+        if (this.signal) {
+            this.signal.addEventListener("abort", finish, { once: true });
+        }
+    });
+}
 }

@@ -370,33 +370,6 @@ input[type=number] {
 }
 
 /** Modal */
-.modal-background {
-    display: block;
-    position: fixed;
-    z-index: 2;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(10, 0, 20, 0.6);
-    backdrop-filter: blur(8px);
-    /** animation */
-    visibility: visible;
-    opacity: 1;
-    transition: visibility 0s, background 0.1s linear, opacity 0.1s linear;
-}
-
-.modal-content {
-    background: linear-gradient(135deg, rgba(0, 30, 50, 0.95) 0%, rgba(0, 15, 30, 0.95) 100%);
-    backdrop-filter: blur(15px);
-    margin: 15% auto;
-    padding: 20px;
-    border: 2px solid #00a3cc;
-    border-radius: 16px;
-    box-shadow: 0 0 30px rgba(0, 212, 255, 0.3), 0 0 60px rgba(0, 212, 255, 0.15);
-    color: #a8e6ff;
-    width: 80%;
-}
 
 .modal-disabled {
     /** animation */
@@ -405,6 +378,7 @@ input[type=number] {
     opacity: 0;
     transition: all 0.1s linear;
 }
+
 
 /** Context Menu */
 .context-menu-background {
@@ -651,30 +625,291 @@ input[type=number] {
    MESSAGE CARDS & MODALS
    ========================================= */
 
-.modal-content, .modal-video-connect, .message-box {
-    background: rgba(12, 18, 15, 0.95) !important;
-    border: 1px solid rgba(70, 157, 132, 0.5) !important;
-    box-shadow: 0 0 30px rgba(70, 157, 132, 0.25) !important;
-    color: #ffffff !important;
-    border-radius: 12px !important;
-    backdrop-filter: blur(16px) !important;
+#modal-overlay {
+    position: fixed;
+    inset: 0;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+
+    background: rgba(0, 0, 0, .55);
+
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+
+    z-index: 99999;
 }
 
-.modal-content button, .message-box button {
-    background: rgba(70, 157, 132, 0.2) !important;
-    border: 1px solid rgba(70, 157, 132, 0.5) !important;
-    color: white !important;
-    border-radius: 6px !important;
-    padding: 8px 16px !important;
-    cursor: pointer !important;
-    transition: background 0.2s ease !important;
-}
+#modal-parent {
+    display: flex;
+    justify-content: center;
+    align-items: center;
 
-.modal-content button:hover, .message-box button:hover {
-    background: rgba(70, 157, 132, 0.5) !important;
+    width: 100%;
+    height: 100%;
 }
 
 
+.message-box {
+    width: 460px;
+    max-width: calc(100vw - 48px);
+
+    display: flex;
+    flex-direction: column;
+
+    gap: 22px;
+
+    padding: 30px;
+
+    border-radius: 18px;
+
+    background: rgba(20, 24, 28, 0.65);
+
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+
+    border: 1px solid rgba(255,255,255,.10);
+
+    box-shadow:
+        0 25px 70px rgba(0,0,0,.45),
+        inset 0 1px rgba(255,255,255,.08);
+
+    color: white;
+}
+
+.message-box-simple {
+    width: 420px;
+
+    display: flex;
+    flex-direction: column;
+
+    align-items: stretch;
+
+    gap: 20px;
+
+    padding: 28px;
+}
+
+.message-box-simple .message-text {
+    margin: 0;
+
+    max-width: 100%;
+
+    font-size: 16px;
+    line-height: 1.7;
+
+    color: #d4d8de;
+
+    text-align: left;
+}
+
+.message-box-simple button {
+    margin: 0;
+
+    min-width: 140px;
+    height: 48px;
+
+    padding: 0 28px;
+
+    border: none;
+    border-radius: 12px;
+
+    background: #69b887;
+
+    color: white;
+
+    font-size: 18px;
+    font-weight: 600;
+
+    box-shadow: none;
+
+    align-self: center;
+
+    cursor: pointer;
+
+    transition: none;
+}
+
+
+.message-box button,
+.message-box button:hover,
+.message-box button:focus,
+.message-box button:active,
+.message-box-simple button,
+.message-box-simple button:hover,
+.message-box-simple button:focus,
+.message-box-simple button:active {
+    background: #69b887 !important;
+
+    transform: none !important;
+
+    box-shadow: none !important;
+
+    border: none;
+
+    transition: none !important;
+}
+
+.message-title{
+    margin:0;
+
+    font-size:24px;
+    font-weight:600;
+
+    color:white;
+}
+
+.message-text{
+    margin:0;
+
+    font-size:16px;
+    line-height:1.7;
+
+    color:#d4d8de;
+}
+
+.message-shortcut {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+
+    padding: 14px 16px;
+
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 14px;
+}
+
+.message-shortcut-key {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    width: 56px;
+    height: 56px;
+
+    flex-shrink: 0;
+
+    font-family: Inter, system-ui, sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: .03em;
+
+    color: #fff;
+
+    background: linear-gradient(
+        180deg,
+        rgba(255,255,255,.12) 0%,
+        rgba(255,255,255,.05) 100%
+    );
+
+    border: 2px solid rgba(255,255,255,.18);
+    border-radius: 14px;
+
+    box-shadow:
+        inset 0 2px 0 rgba(255,255,255,.18),
+        inset 0 -5px 0 rgba(0,0,0,.18),
+        0 8px 18px rgba(0,0,0,.28);
+}
+
+/* Remove the decorative triangles */
+.message-shortcut-key::before,
+.message-shortcut-key::after {
+    display: none;
+    content: none;
+}
+
+.message-shortcut-text {
+    font-size: 15px;
+    line-height: 1.5;
+    color: #c8cdd3;
+}
+
+
+.message-box button{
+    align-self:flex-end;
+
+    min-width:120px;
+
+    padding:12px 22px;
+
+    border:none;
+
+    border-radius:10px;
+
+    background:#5daa7a;
+
+    color:white;
+
+    font-weight:600;
+
+    cursor:pointer;
+
+    transition:.2s;
+}
+
+.message-box button:hover{
+    background:#69b887;
+
+    transform:translateY(-2px);
+}
+
+.message-icon {
+    width: 42px;
+    height: 42px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border-radius: 10px;
+
+    background: rgba(255,255,255,.05);
+}
+
+.message-icon svg {
+    width: 22px;
+    height: 22px;
+}
+
+.message-error .message-icon {
+    background: rgba(239,68,68,.08);
+    color: #ef4444;
+}
+
+.message-warning .message-icon {
+    background: rgba(245,158,11,.08);
+    color: #f59e0b;
+}
+
+.message-success .message-icon {
+    background: rgba(34,197,94,.08);
+    color: #22c55e;
+}
+
+.message-default .message-icon {
+    background: rgba(59,130,246,.08);
+    color: #3b82f6;
+}
+.message-header {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+
+    gap: 12px;
+
+    width: 100%;
+}
+.message-header .message-title {
+    margin: 0;
+
+    font-size: 24px;
+    font-weight: 600;
+    line-height: 1.2;
+
+    color: white;
+}
 /** TODO: reorder stream sidebar */
 
 /** Errors */
