@@ -15,6 +15,18 @@ import {
     streamStatsToText,
     type NetworkQuality
 } from "./stream/stats.js";
+const { BACKEND_URL, HOME_URL } = window.APP_CONFIG;
+
+interface AppConfig {
+    BACKEND_URL: string;
+    HOME_URL: string;
+}
+
+declare global {
+    interface Window {
+        APP_CONFIG: AppConfig;
+    }
+}
 
 // Lock UI immediately
 document.body.classList.add("loading")
@@ -43,7 +55,7 @@ function startHeartbeat() {
 
     setInterval(async () => {
         try {
-            await fetch(`https://backend.rigzer.com/api/sessions/heartbeat-by-token/${token}`, {
+            await fetch(`${BACKEND_URL}/api/sessions/heartbeat-by-token/${token}`, {
                 method: "POST",
                 credentials: "include"
             })
@@ -150,8 +162,22 @@ class ViewerApp implements Component {
 
     private inputConfig: StreamInputConfig = defaultStreamInputConfig()
     private previousMouseMode: MouseMode
-    private toggleFullscreenWithKeybind: boolean
-    private hasShownFullscreenEscapeWarning = false
+private toggleFullscreenWithKeybind: boolean
+private hasShownFullscreenEscapeWarning = false
+
+// ESC handling:
+// Quick press = send ESC to the game.
+// Hold for 1 second = exit Rigzer fullscreen.
+private escapeHoldTimer: number | null = null
+private escapeHeld = false
+private escapeSentToGame = false
+
+private readonly ESC_HOLD_DURATION_MS = 1000
+
+    // One-time onboarding for the navbar / fullscreen flow.
+    // The large cursor and ESC prompt are shown only once per stream.
+    private hasShownNavbarOnboarding = false
+    private navbarGuideEl: HTMLDivElement | null = null
 
     private immersiveTransitionInProgress = false
 
@@ -422,7 +448,7 @@ stats?.addNetworkQualityListener(
                 for (let attempt = 0; attempt < 6; attempt++) {
 
                     const res = await fetch(
-                        `https://backend.rigzer.com/api/sessions/status-by-token/${token}`,
+                        `${BACKEND_URL}/api/sessions/status-by-token/${token}`,
                         {
                             method: "GET",
                             credentials: "include",
@@ -508,18 +534,51 @@ stats?.addNetworkQualityListener(
             requestAnimationFrame(async () => {
                 hideSplash();
 
-                await showMessage(
-                    "The game will now enter Fullscreen.",
-                    {
-                        title: "Fullscreen",
-                        confirmText: "Continue",
-                        keyboardKey: "ESC",
-                        keyboardHint: "Hold to exit Fullscreen."
-                    }
-                );
+                // First-time onboarding:
+                // 1. Keep the navbar visible and expanded.
+                // 2. Show the large cursor pointing at the top-right 3-dots.
+                // 3. Show the ESC/fullscreen prompt at the same time.
+                // 4. Only after Continue do we enter fullscreen + pointer lock.
+                if (!this.hasShownNavbarOnboarding) {
+                    this.hasShownNavbarOnboarding = true;
 
-                await this.requestFullscreen();
-                await this.requestPointerLock();
+                    setSidebar(this.sidebar);
+                    setSidebarVisible(true);
+                    setSidebarExtended(true);
+
+                    this.showNavbarGuide();
+
+                    try {
+                        await showMessage(
+                            "The 3 dots are in the top-right corner. They open the stream controls. " ,
+                            {
+                                title: "Stream Controls & Fullscreen",
+                                confirmText: "Continue",
+                                keyboardKey: "ESC",
+                                keyboardHint: "Hold ESC to exit Fullscreen."
+                            }
+                        );
+
+                        // Remove the onboarding cursor before pointer lock
+                        // hides the normal mouse cursor.
+                        this.hideNavbarGuide();
+
+                        await this.requestFullscreen();
+
+                        if (this.isFullscreen()) {
+                            await this.requestPointerLock(true);
+                        }
+                    } catch (error) {
+                        // If the modal/fullscreen flow is interrupted, keep the
+                        // normal navbar available and do not show onboarding again.
+                        this.hideNavbarGuide();
+                        console.warn("Fullscreen onboarding interrupted", error);
+                    }
+                } else {
+                    // Should normally only be reached after an unusual reconnect
+                    // or repeated ConnectionComplete event.
+                    this.hideNavbarGuide();
+                }
             });
 
             return;
@@ -754,7 +813,7 @@ if (
         const token = getStreamToken()
         try {
             await fetch(
-                `https://backend.rigzer.com/api/sessions/cancel-by-token/${token}`,
+                `${BACKEND_URL}/api/sessions/cancel-by-token/${token}`,
                 { method: "POST", credentials: "include" }
             )
         } catch (e) {
@@ -1165,6 +1224,123 @@ else{
         window.requestAnimationFrame(this.onGamepadUpdate.bind(this))
     }
 
+showNavbarGuide() {
+    // Only show the guide while the navbar is available.
+    if (this.isFullscreen() || this.navbarGuideEl) {
+        return;
+    }
+
+    const guide = document.createElement("div");
+    guide.id = "rigzer-navbar-guide";
+
+guide.innerHTML = `
+    <div class="rigzer-navbar-guide-arrow">
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 238.136 248.064"
+            aria-hidden="true"
+        >
+            <path
+                d="M238.136,80.452,140.024,0l16.6,49.075C59.435,63.831-11.074,147.386,1.44,248.064c0,0,10.5-58.171,65.268-103.175a144.579,144.579,0,0,1,76.628-31.35c4.236-.386,8.645-.605,13.019-.595l-16.331,47.961Z"
+                fill="white"
+            />
+        </svg>
+    </div>
+`;
+guide.style.cssText = `
+    position: fixed;
+
+    top: 40px;
+    right: 160px;
+
+    width: 50px;
+    height: 53px;
+
+    z-index: 1000001;
+
+    pointer-events: none;
+    user-select: none;
+`;
+
+    const arrow = guide.querySelector(
+        ".rigzer-navbar-guide-arrow"
+    ) as HTMLDivElement | null;
+
+if (arrow) {
+    arrow.style.cssText = `
+        width: 50px;
+        height: 53px;
+
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+    `;
+
+    const svg = arrow.querySelector("svg") as SVGElement | null;
+
+    if (svg) {
+        svg.style.width = "50px";
+        svg.style.height = "53px";
+        svg.style.transform = "scaleY(-1)";
+    }
+}
+
+    if (!document.getElementById("rigzer-navbar-guide-style")) {
+        const style = document.createElement("style");
+
+        style.id = "rigzer-navbar-guide-style";
+
+        style.textContent = `
+
+            @media (max-width: 900px) {
+                #rigzer-navbar-guide {
+                    top: 40px !important;
+                    right: 160px !important;
+                    width: 50px !important;
+                    height: 53px !important;
+                }
+
+                #rigzer-navbar-guide .rigzer-navbar-guide-arrow {
+                    width: 50px !important;
+                    height: 53px !important;
+                }
+
+                #rigzer-navbar-guide svg {
+                    width: 50px !important;
+                    height: 53px !important;
+                }
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    /*
+     * Keep the real navbar above the onboarding modal.
+     * We do not create a fake navbar button.
+     */
+    const sidebarRoot = getSidebarRoot();
+
+    if (sidebarRoot) {
+        sidebarRoot.style.zIndex = "1000000";
+    }
+
+    document.body.appendChild(guide);
+
+    this.navbarGuideEl = guide;
+}
+
+hideNavbarGuide() {
+        if (!this.navbarGuideEl) {
+            return;
+        }
+
+        this.navbarGuideEl.remove();
+        this.navbarGuideEl = null;
+    }
+
     async requestFullscreen() {
         const body = document.body
         this.immersiveTransitionInProgress = true
@@ -1240,7 +1416,11 @@ else{
         return "fullscreenElement" in document && !!document.fullscreenElement
     }
     private async onFullscreenChange() {
-        this.checkFullyImmersed()
+        if (this.isFullscreen()) {
+            this.hideNavbarGuide();
+        }
+
+        this.checkFullyImmersed();
     }
 
     async requestPointerLock(errorIfNotFound: boolean = false) {
@@ -1441,17 +1621,29 @@ class ViewerSidebar implements Component, Sidebar {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
             <span>Fullscreen</span>
         `;
-        btnFullscreen.onclick = async () => {
-            if (this.app.isFullscreen()) {
-                await this.app.exitPointerLock();
-                await this.app.exitFullscreen();
-            } else {
-                await this.app.requestFullscreen();
-                setTimeout(async () => {
-                    await this.app.requestPointerLock(true);
-                }, 150);
-            }
-        };
+btnFullscreen.onclick = async () => {
+
+    // If the onboarding ESC/fullscreen prompt is currently open,
+    // close it immediately when the user chooses Fullscreen.
+    showModal(null);
+
+    // Also remove the arrow guide.
+    this.app.hideNavbarGuide();
+
+    if (this.app.isFullscreen()) {
+
+        await this.app.exitPointerLock();
+        await this.app.exitFullscreen();
+
+    } else {
+
+        await this.app.requestFullscreen();
+
+        if (this.app.isFullscreen()) {
+            await this.app.requestPointerLock(true);
+        }
+    }
+};
 
         const btnEndStream = document.createElement("button");
         btnEndStream.className = "gamebar-btn btn-danger";
@@ -1467,14 +1659,14 @@ class ViewerSidebar implements Component, Sidebar {
 
             try {
                 await fetch(
-                    `https://backend.rigzer.com/api/sessions/cancel-by-token/${token}`,
+                    `${BACKEND_URL}/api/sessions/cancel-by-token/${token}`,
                     {
                         method: "POST",
                         credentials: "include",
                     }
                 );
 
-                window.location.replace("https://rigzer.com");
+                window.location.replace(HOME_URL);
             } catch (e) {
                 console.error("Failed to end stream", e);
 

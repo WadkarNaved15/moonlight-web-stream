@@ -506,7 +506,7 @@ input[type=number] {
     -webkit-backdrop-filter: none;
     border: 1px solid transparent;
     box-shadow: none; 
-    
+    z-index: 9999 !important;
     width: 32px; 
     height: 32px;
     border-radius: 6px; 
@@ -553,6 +553,27 @@ input[type=number] {
     opacity: 0;
     pointer-events: none;
 }
+
+/* First-time fullscreen onboarding: keep the real 3-dots control visible
+   above the fullscreen explanation modal. */
+.sidebar-button.onboarding-visible {
+    z-index:9999 !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    background: rgba(255, 255, 255, 0.10) !important;
+    border-color: rgba(255, 255, 255, 0.18) !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28) !important;
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+}
+
+.sidebar-button.onboarding-visible::after {
+    color: #ffffff !important;
+    text-shadow:
+        0 1px 5px rgba(0,0,0,1),
+        0 0 4px rgba(255,255,255,0.35) !important;
+}
+
 
 /* =========================================
    DROPDOWN MENU CONTAINER (Frosted Glass)
