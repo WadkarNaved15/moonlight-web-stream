@@ -51,7 +51,6 @@ function startHeartbeat() {
         return
     }
 
-    console.info("Starting heartbeat for token", token)
 
     setInterval(async () => {
         try {
@@ -297,6 +296,25 @@ private toastTimeout: number | null = null;
         })
 
         document.addEventListener("pointerlockchange", this.onPointerLockChange.bind(this))
+        document.addEventListener("pointerlockerror", () => {
+            console.warn("Pointer lock error")
+
+            const inputElement = document.getElementById("input")
+
+            // Do nothing if pointer lock somehow succeeded.
+            if (document.pointerLockElement === inputElement) {
+                return
+            }
+
+            if (this.inputConfig.mouseMode === "relative") {
+                this.inputConfig.mouseMode = this.previousMouseMode
+                this.setInputConfig(this.inputConfig)
+            }
+
+            requestAnimationFrame(() => {
+                this.focusInput()
+            })
+        })
         document.addEventListener("fullscreenchange", this.onFullscreenChange.bind(this))
 
         window.addEventListener("gamepadconnected", this.onGamepadConnect.bind(this))
@@ -563,10 +581,19 @@ stats?.addNetworkQualityListener(
                         // hides the normal mouse cursor.
                         this.hideNavbarGuide();
 
-                        await this.requestFullscreen();
+                        await this.requestFullscreen()
 
                         if (this.isFullscreen()) {
-                            await this.requestPointerLock(true);
+                            const pointerLockSucceeded =
+                                await this.requestPointerLock(true)
+
+                            // If pointer lock failed, make sure the stream
+                            // still has keyboard focus and remains usable.
+                            if (!pointerLockSucceeded) {
+                                requestAnimationFrame(() => {
+                                    this.focusInput()
+                                })
+                            }
                         }
                     } catch (error) {
                         // If the modal/fullscreen flow is interrupted, keep the
@@ -638,10 +665,10 @@ stats?.addNetworkQualityListener(
 
             return;
         }
-        if (data.type === "addDebugLine") {
-            console.info(`[Stream] ${data.line}`)
-            return
-        }
+        // if (data.type === "addDebugLine") {
+        //     console.info(`[Stream] ${data.line}`)
+        //     return
+        // }
     }
 
     // ---------------------------------------------------------------
@@ -1101,7 +1128,7 @@ else{
     }
 
     private onScreenKeyboardSetVisible(event: ScreenKeyboardSetVisibleEvent) {
-        console.info(event.detail)
+        // console.info(event.detail)
         const screenKeyboard = this.sidebar.getScreenKeyboard()
 
         const newShown = event.detail.visible
@@ -1415,75 +1442,126 @@ hideNavbarGuide() {
     isFullscreen(): boolean {
         return "fullscreenElement" in document && !!document.fullscreenElement
     }
-    private async onFullscreenChange() {
-        if (this.isFullscreen()) {
-            this.hideNavbarGuide();
+private async onFullscreenChange() {
+    if (this.isFullscreen()) {
+        this.hideNavbarGuide()
+    } else {
+        if (this.inputConfig.mouseMode === "relative") {
+            this.inputConfig.mouseMode = this.previousMouseMode
+            this.setInputConfig(this.inputConfig)
         }
 
-        this.checkFullyImmersed();
+        requestAnimationFrame(() => {
+            this.focusInput()
+        })
     }
 
-    async requestPointerLock(errorIfNotFound: boolean = false) {
+    this.checkFullyImmersed()
+}
+async requestPointerLock(errorIfNotFound: boolean = false) {
+    const inputElement = document.getElementById("input") as HTMLDivElement | null
+
+    if (
+        !inputElement ||
+        !("requestPointerLock" in inputElement) ||
+        typeof inputElement.requestPointerLock !== "function"
+    ) {
+        if (errorIfNotFound) {
+            console.warn("Pointer lock is not supported")
+        }
+
+        return false
+    }
+
+    // Save the current mode only if we are not already pointer locked.
+    if (document.pointerLockElement !== inputElement) {
         this.previousMouseMode = this.inputConfig.mouseMode
+    }
 
-        const inputElement = document.getElementById("input") as HTMLDivElement
+    this.focusInput()
+    setSidebarExtended(false)
 
-        if (inputElement && "requestPointerLock" in inputElement && typeof inputElement.requestPointerLock == "function") {
-            this.focusInput()
+    try {
+        // First try raw/unadjusted mouse movement.
+        await inputElement.requestPointerLock({
+            unadjustedMovement: true
+        })
 
+        // Only switch to relative mode after pointer lock succeeds.
+        if (document.pointerLockElement === inputElement) {
             this.inputConfig.mouseMode = "relative"
             this.setInputConfig(this.inputConfig)
 
-            setSidebarExtended(false)
+            return true
+        }
 
-            const onLockError = () => {
-                document.removeEventListener("pointerlockerror", onLockError)
-                inputElement.requestPointerLock()
+        throw new Error("Pointer lock was not acquired")
+    } catch (error) {
+        console.warn(
+            "Pointer lock with unadjustedMovement failed, trying normal pointer lock",
+            error
+        )
+
+        try {
+            // Fallback to normal pointer lock.
+            await inputElement.requestPointerLock()
+
+            if (document.pointerLockElement === inputElement) {
+                this.inputConfig.mouseMode = "relative"
+                this.setInputConfig(this.inputConfig)
+
+                return true
             }
 
-            document.addEventListener("pointerlockerror", onLockError, { once: true })
+            throw new Error("Normal pointer lock was not acquired")
+        } catch (fallbackError) {
+            console.warn(
+                "Pointer lock completely failed",
+                fallbackError
+            )
 
-            try {
-                let promise = inputElement.requestPointerLock({ unadjustedMovement: true })
-                if (promise) {
-                    await promise
-                } else {
-                    inputElement.requestPointerLock()
-                }
-            } catch (error) {
-                if (error instanceof Error && error.name == "NotSupportedError") {
-                    inputElement.requestPointerLock()
-                } else {
-                    throw error
-                }
-            } finally {
-                document.removeEventListener("pointerlockerror", onLockError)
+            // Stay in the previous mouse mode.
+            if (this.inputConfig.mouseMode === "relative") {
+                this.inputConfig.mouseMode = this.previousMouseMode
+                this.setInputConfig(this.inputConfig)
             }
 
-        } else if (errorIfNotFound) {
-            await showMessage(
-                "Pointer Lock isn't supported by your browser.",
-                {
-                    title: "Unsupported Browser",
-                    confirmText: "OK",
-                    variant: "warning"
-                }
-            );
+            requestAnimationFrame(() => {
+                this.focusInput()
+            })
+
+            return false
         }
     }
+}
     async exitPointerLock() {
         if ("exitPointerLock" in document && typeof document.exitPointerLock == "function") {
             document.exitPointerLock()
         }
     }
-    private onPointerLockChange() {
-        this.checkFullyImmersed()
+private onPointerLockChange() {
+    this.checkFullyImmersed()
 
-        if (!document.pointerLockElement) {
-            this.inputConfig.mouseMode = this.previousMouseMode
+    const inputElement = document.getElementById("input")
+
+    if (document.pointerLockElement === inputElement) {
+        if (this.inputConfig.mouseMode !== "relative") {
+            this.inputConfig.mouseMode = "relative"
             this.setInputConfig(this.inputConfig)
         }
+
+        return
     }
+
+    if (this.inputConfig.mouseMode === "relative") {
+        this.inputConfig.mouseMode = this.previousMouseMode
+        this.setInputConfig(this.inputConfig)
+    }
+
+    requestAnimationFrame(() => {
+        this.focusInput()
+    })
+}
 
     private checkFullyImmersed() {
         if ("pointerLockElement" in document && document.pointerLockElement &&
@@ -1538,10 +1616,10 @@ class ConnectionInfoModal implements Modal<void> {
             return
         }
 
-        if (data.type === "addDebugLine") {
-            console.info(`[Stream] ${data.line}`)
-            return
-        }
+        // if (data.type === "addDebugLine") {
+        //     console.info(`[Stream] ${data.line}`)
+        //     return
+        // }
     }
 
     onFinish(abort: AbortSignal): Promise<void> {
