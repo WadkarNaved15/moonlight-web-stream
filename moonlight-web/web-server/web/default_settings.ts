@@ -7,7 +7,7 @@ const trueDefaultSettings: Settings =
 {
     // possible values: "left", "right", "up", "down"
     "sidebarEdge": "left",
-    "bitrate": 40000,
+    "bitrate": 25000,
     "packetSize": 2048,
     "fps": 60,
     "videoFrameQueueSize": 3,
